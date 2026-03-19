@@ -25,6 +25,8 @@ dependencies = [
     "numpy",
     "pandas",
     "onnxruntime",
+    "psycopg2-binary",
+    "slowapi",
 ]
 
 [project.optional-dependencies]

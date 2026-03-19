@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     environment: str = "development"
+    # Comma-separated list of allowed CORS origins. Use "*" for dev, exact origins for prod.
+    cors_origins: str = "http://localhost:5173"
     aemet_api_key: str = ""
     mapbox_token: str = ""
     loop_detector_urls: str = ""

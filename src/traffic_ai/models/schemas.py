@@ -118,3 +118,10 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+
+
+class UserRegister(BaseModel):
+    """Request body for user registration."""
+    email: str
+    password: str = Field(min_length=8)
+    name: Optional[str] = None
