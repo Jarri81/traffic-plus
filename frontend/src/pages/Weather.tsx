@@ -2,25 +2,39 @@ import { Thermometer, Droplets, Wind, Eye, CloudRain } from 'lucide-react';
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import PageContainer from '../components/ui/PageContainer';
 import Card from '../components/ui/Card';
-import { currentWeather, forecast } from '../data/mock';
+import Spinner from '../components/ui/Spinner';
+import { useWeather } from '../hooks/useWeather';
 import { chartColors } from '../design/tokens';
 
-const weatherMetrics = [
-  { icon: Thermometer, label: 'Temperature', value: `${currentWeather.temperature}°C`, color: '#E8A44C' },
-  { icon: Droplets, label: 'Humidity', value: `${currentWeather.humidity}%`, color: '#4EA8A6' },
-  { icon: Wind, label: 'Wind Speed', value: `${currentWeather.windSpeed} km/h`, color: '#9BA3B0' },
-  { icon: Eye, label: 'Visibility', value: `${currentWeather.visibility} km`, color: '#D4C24E' },
-  { icon: CloudRain, label: 'Precipitation', value: `${currentWeather.precipitation} mm`, color: '#4EA8A6' },
-];
-
 export default function Weather() {
+  const { data, isLoading, error } = useWeather();
+
+  if (isLoading) return <PageContainer><Spinner className="h-64" /></PageContainer>;
+  if (error || !data) return (
+    <PageContainer>
+      <div className="text-center py-20 text-[#5E6A7A] text-[13px]">
+        Weather data unavailable. Check your network connection.
+      </div>
+    </PageContainer>
+  );
+
+  const { current, forecast } = data;
+
+  const weatherMetrics = [
+    { icon: Thermometer, label: 'Temperature', value: `${current.temperature}°C`, color: '#E8A44C' },
+    { icon: Droplets, label: 'Humidity', value: `${current.humidity}%`, color: '#4EA8A6' },
+    { icon: Wind, label: 'Wind Speed', value: `${current.windSpeed} km/h`, color: '#9BA3B0' },
+    { icon: Eye, label: 'Visibility', value: `${current.visibility} km`, color: '#D4C24E' },
+    { icon: CloudRain, label: 'Precipitation', value: `${current.precipitation} mm`, color: '#4EA8A6' },
+  ];
+
   return (
     <PageContainer className="flex flex-col gap-6">
       <Card>
         <div className="flex items-center justify-between mb-5">
           <div>
             <h2 className="text-[22px] font-semibold tracking-[-0.02em] text-[#F4F5F7]">Current Conditions</h2>
-            <p className="text-[13px] text-[#5E6A7A] mt-1">{currentWeather.condition} · Los Angeles Metro Area</p>
+            <p className="text-[13px] text-[#5E6A7A] mt-1">{current.condition} · Live via Open-Meteo</p>
           </div>
         </div>
         <div className="grid grid-cols-5 gap-4">
@@ -35,6 +49,7 @@ export default function Weather() {
           ))}
         </div>
       </Card>
+
       <Card>
         <h2 className="text-[15px] font-semibold tracking-[-0.02em] text-[#F4F5F7] mb-4">Weather Impact on Risk Score</h2>
         <ResponsiveContainer width="100%" height={280}>
@@ -53,6 +68,7 @@ export default function Weather() {
           </AreaChart>
         </ResponsiveContainer>
       </Card>
+
       <Card>
         <h2 className="text-[15px] font-semibold tracking-[-0.02em] text-[#F4F5F7] mb-4">48h Forecast Timeline</h2>
         <ResponsiveContainer width="100%" height={300}>

@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import clsx from 'clsx';
-import { LayoutDashboard, Route, ShieldAlert, Camera, Bell, CloudSun, Settings, Activity, User } from 'lucide-react';
+import { LayoutDashboard, Route, ShieldAlert, Camera, Bell, CloudSun, Map, Settings, Activity, User } from 'lucide-react';
 
 interface NavItem { icon: typeof LayoutDashboard; label: string; to: string; }
 
 const navItems: NavItem[] = [
   { icon: LayoutDashboard, label: 'Dashboard', to: '/' },
+  { icon: Map, label: 'Map', to: '/map' },
   { icon: Route, label: 'Segments', to: '/segments' },
   { icon: ShieldAlert, label: 'Risk Analysis', to: '/risk' },
   { icon: Camera, label: 'Cameras', to: '/cameras' },
