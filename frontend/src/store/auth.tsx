@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
 import { login as apiLogin, logout as apiLogout, getToken } from '../api/auth';
+import { startTokenRefresh, stopTokenRefresh } from '../api/tokenRefresh';
 
 interface AuthState {
   token: string | null;
@@ -13,12 +14,20 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(getToken);
 
+  // Start refresh timer on mount if already logged in
+  useEffect(() => {
+    if (token) startTokenRefresh();
+    return () => stopTokenRefresh();
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
   const login = useCallback(async (email: string, password: string) => {
     const res = await apiLogin(email, password);
     setToken(res.access_token);
+    startTokenRefresh();
   }, []);
 
   const logout = useCallback(() => {
+    stopTokenRefresh();
     apiLogout();
     setToken(null);
   }, []);
