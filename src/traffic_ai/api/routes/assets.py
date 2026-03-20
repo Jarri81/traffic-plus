@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from traffic_ai.api.deps import get_current_user
+from traffic_ai.api.deps import get_current_user, scoped_pilot
 from traffic_ai.db.database import get_db
 from traffic_ai.models.orm import RoadAsset, User
 
@@ -37,8 +37,9 @@ async def list_assets(
 ) -> list[AssetOut]:
     """List road assets with optional filters."""
     stmt = select(RoadAsset)
-    if pilot:
-        stmt = stmt.where(RoadAsset.pilot == pilot)
+    effective_pilot = scoped_pilot(current_user, pilot)
+    if effective_pilot:
+        stmt = stmt.where(RoadAsset.pilot == effective_pilot)
     if asset_type:
         stmt = stmt.where(RoadAsset.asset_type == asset_type)
     stmt = stmt.offset(offset).limit(limit)

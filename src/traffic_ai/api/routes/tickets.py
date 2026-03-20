@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from traffic_ai.api.deps import get_current_user
+from traffic_ai.api.deps import get_current_user, require_operator, scoped_pilot
 from traffic_ai.config import settings
 from traffic_ai.db.database import get_db
 from traffic_ai.models.orm import MaintenanceTicket, User
@@ -30,8 +30,9 @@ async def list_tickets(
     stmt = select(MaintenanceTicket)
     if status:
         stmt = stmt.where(MaintenanceTicket.status == status)
-    if pilot:
-        stmt = stmt.where(MaintenanceTicket.pilot == pilot)
+    effective_pilot = scoped_pilot(current_user, pilot)
+    if effective_pilot:
+        stmt = stmt.where(MaintenanceTicket.pilot == effective_pilot)
     stmt = stmt.offset(offset).limit(limit)
     result = await db.execute(stmt)
     return [TicketOut.model_validate(t) for t in result.scalars().all()]
@@ -53,7 +54,7 @@ async def update_ticket_status(
     ticket_id: int,
     update: TicketUpdate,
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_operator),
 ) -> TicketOut:
     """Update the status of a maintenance ticket."""
     result = await db.execute(select(MaintenanceTicket).where(MaintenanceTicket.id == ticket_id))
@@ -74,7 +75,7 @@ async def update_ticket_status(
 async def upload_ticket_photo(
     ticket_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_operator),
     photo: UploadFile = File(...),
 ) -> dict:
     """Upload a photo attachment to a ticket."""

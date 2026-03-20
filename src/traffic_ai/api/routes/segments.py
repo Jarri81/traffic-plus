@@ -4,7 +4,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from traffic_ai.api.deps import get_current_user
+from traffic_ai.api.deps import get_current_user, scoped_pilot
 from traffic_ai.db.database import get_db
 from traffic_ai.models.orm import RoadSegment, User
 from traffic_ai.models.schemas import RoadSegmentOut
@@ -22,8 +22,9 @@ async def list_segments(
 ) -> list[RoadSegmentOut]:
     """List road segments with optional pilot filter and pagination."""
     stmt = select(RoadSegment)
-    if pilot:
-        stmt = stmt.where(RoadSegment.pilot == pilot)
+    effective_pilot = scoped_pilot(current_user, pilot)
+    if effective_pilot:
+        stmt = stmt.where(RoadSegment.pilot == effective_pilot)
     stmt = stmt.offset(offset).limit(limit)
     result = await db.execute(stmt)
     return [RoadSegmentOut.model_validate(s) for s in result.scalars().all()]

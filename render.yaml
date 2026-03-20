@@ -1,0 +1,157 @@
+# Render deployment configuration
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Services deployed:
+#   - traffic-api     FastAPI web server (gunicorn + uvicorn workers)
+#   - traffic-worker  Celery task worker
+#   - traffic-beat    Celery Beat scheduler
+#
+# External services (free tiers):
+#   - Neon            Managed PostgreSQL + PostGIS  https://neon.tech
+#   - Upstash         Managed Redis                 https://upstash.com
+#   - InfluxDB Cloud  Time-series storage           https://cloud.influxdata.com
+#
+# One-time setup:
+#   1. Create a Neon project → copy the connection string → set DATABASE_URL
+#      Enable PostGIS on the DB: "CREATE EXTENSION IF NOT EXISTS postgis;"
+#   2. Create an Upstash Redis database → copy the redis:// URL → set REDIS_URL
+#   3. Create an InfluxDB Cloud account (free) → create a bucket + API token
+#   4. Generate SECRET_KEY: python -c "import secrets; print(secrets.token_hex(32))"
+#   5. Set all env vars in the Render dashboard under "Environment"
+
+services:
+  # ─── API Server ──────────────────────────────────────────────────────────────
+  - type: web
+    name: traffic-api
+    runtime: python
+    buildCommand: pip install -e ".[s3]"
+    startCommand: >
+      sh -c "
+        alembic upgrade head &&
+        gunicorn traffic_ai.main:app
+          --workers 2
+          --worker-class uvicorn.workers.UvicornWorker
+          --bind 0.0.0.0:$PORT
+          --timeout 120
+          --access-logfile -
+      "
+    plan: free
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: PROFILE
+        value: balanced
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        sync: false   # Set in dashboard → Neon connection string
+      - key: REDIS_URL
+        sync: false   # Set in dashboard → Upstash redis:// URL
+      - key: INFLUX_URL
+        sync: false   # Set in dashboard → InfluxDB Cloud URL
+      - key: INFLUX_TOKEN
+        sync: false
+      - key: INFLUX_ORG
+        sync: false
+      - key: INFLUX_BUCKET
+        value: traffic_metrics
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"
+      - key: CORS_ORIGINS
+        sync: false   # Set to your frontend URL, e.g. https://traffic.onrender.com
+      - key: S3_BUCKET
+        sync: false
+      - key: AWS_REGION
+        value: us-east-1
+
+  # ─── Celery Worker ───────────────────────────────────────────────────────────
+  - type: worker
+    name: traffic-worker
+    runtime: python
+    buildCommand: pip install -e ".[s3]"
+    startCommand: >
+      celery -A traffic_ai.celery_app.app worker
+        --loglevel=info
+        --concurrency=2
+        --queues=default
+    plan: free
+    envVars:
+      - key: PROFILE
+        value: lite
+      - key: ENVIRONMENT
+        value: production
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: DATABASE_URL
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: REDIS_URL
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: INFLUX_URL
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: INFLUX_TOKEN
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: INFLUX_ORG
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: INFLUX_BUCKET
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: SECRET_KEY
+
+  # ─── Celery Beat (scheduler) ─────────────────────────────────────────────────
+  - type: worker
+    name: traffic-beat
+    runtime: python
+    buildCommand: pip install -e ".[s3]"
+    startCommand: >
+      celery -A traffic_ai.celery_app.app beat
+        --loglevel=info
+        --schedule=/tmp/celerybeat-schedule
+    plan: free
+    envVars:
+      - key: PROFILE
+        value: lite
+      - key: ENVIRONMENT
+        value: production
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: DATABASE_URL
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: REDIS_URL
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: INFLUX_URL
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: INFLUX_TOKEN
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: INFLUX_ORG
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: INFLUX_BUCKET
+      - fromService:
+          name: traffic-api
+          type: web
+          envVarKey: SECRET_KEY

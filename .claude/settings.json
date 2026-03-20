@@ -6,7 +6,11 @@
       "Bash(pip show:*)",
       "Bash(echo \"VIRTUAL_ENV: $VIRTUAL_ENV\")",
       "Bash(echo \"CONDA: $CONDA_DEFAULT_ENV\")",
-      "Bash(pip -V)"
+      "Bash(pip -V)",
+      "Bash(ls d:/Users/Lenovo/DEV/Traffic_plus/.env*)"
+    ],
+    "additionalDirectories": [
+      "d:\\Users\\Lenovo\\DEV\\Traffic_plus\\.github"
     ]
   }
 }
