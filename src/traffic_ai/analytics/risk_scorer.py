@@ -237,10 +237,17 @@ class RiskScoringEngine:
             wind = values.get("wind_speed_kmh", 0)
             score += min(wind / 60.0, 1.0) * 30
 
-            # Low visibility: 10km+ = 0, <1km = 30 pts
-            vis = values.get("visibility_m", 10000)
-            if vis < 10000:
+            # Visibility / fog — 30 pts total.
+            # NOAA / AEMET ingestors write visibility_m (preferred).
+            # Open-Meteo archive does not provide visibility — it writes
+            # cloud_cover_low_pct and fog_factor instead.
+            if "visibility_m" in values:
+                vis = values["visibility_m"]
                 score += (1.0 - min(vis / 10000.0, 1.0)) * 30
+            elif "fog_factor" in values:
+                score += float(values["fog_factor"]) * 30
+            elif "cloud_cover_low_pct" in values:
+                score += min(float(values["cloud_cover_low_pct"]) / 100.0, 1.0) * 20
 
             return min(score, 100.0)
         except Exception:

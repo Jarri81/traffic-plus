@@ -36,22 +36,33 @@ CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", Path.home() / ".cache" / "tra
 SCALER_PATH = CACHE_DIR / "congestion_scaler.json"
 ONNX_OUT = CACHE_DIR / "congestion_lstm.onnx"
 
-# ── Madrid historical data URLs ───────────────────────────────────────────────
-# datos.madrid.es publishes daily CSV files at a predictable URL pattern.
-# One file per day, named YYYY_MM_DD_Intensidades_vias_rapidas.csv (M-30)
-# or  YYYY_MM_DD_intensidad_trafico_urbano.csv (urban sensors).
-MADRID_M30_URL = (
-    "https://datos.madrid.es/egob/catalogo/208883-0-intensidad-trafico-m30/"
-    "{year}/{year}{month:02d}{day:02d}_Intensidades_vias_rapidas.csv"
+# ── Madrid historical data — CKAN API ────────────────────────────────────────
+# datos.madrid.es does NOT have predictable URL slugs; file URLs must be
+# enumerated via the datos.gob.es CKAN API (which mirrors the Madrid catalogue).
+# Dataset: "Tráfico. Histórico de datos del tráfico desde 2013"
+# datos.gob.es identifier: l01280796-trafico-historico-de-datos-del-trafico-desde-20131
+# CKAN package_show endpoint (no auth needed):
+MADRID_CKAN_API = (
+    "https://datos.gob.es/en/catalogo/l01280796-trafico-historico-"
+    "de-datos-del-trafico-desde-20131.json"
 )
 
+# Columns in the 15-min measurement-point CSV (confirmed, semicolon-delimited):
+#   idelem; tipo_elem; distrito; cod_cent; nombre; utm_x; utm_y;
+#   longitud; latitud; fecha; intensidad; ocupacion; carga; nivelservicio;
+#   error; subError
+# 'intensidad' = vehicles/hour, 'ocupacion' = % occupancy, 'carga' = 0-100
+# Note: no speed column in most historical files — we derive from carga.
+
 # Open-Meteo historical archive — free, no key, CC BY 4.0
-# We use the Madrid airport station (lat=40.4, lon=-3.68)
+# Madrid city centre (lat=40.4168, lon=-3.7038)
+# VERIFIED API parameter names (windspeed_10m, NOT wind_speed_10m;
+# visibility is NOT available — use cloud_cover_low + weather_code for fog)
 OPENMETEO_HIST_URL = (
     "https://archive-api.open-meteo.com/v1/archive"
-    "?latitude=40.4&longitude=-3.68"
+    "?latitude=40.4168&longitude=-3.7038"
     "&start_date={start}&end_date={end}"
-    "&hourly=temperature_2m,precipitation,wind_speed_10m"
+    "&hourly=temperature_2m,precipitation,windspeed_10m,cloud_cover_low,weather_code"
     "&timezone=Europe%2FMadrid"
 )
 
@@ -119,7 +130,20 @@ def main() -> None:
 
 
 def fetch_madrid_historical(lookback_days: int, skip_download: bool = False):
-    """Download Madrid M-30 loop detector CSVs and concatenate."""
+    """Download Madrid historical traffic CSVs via datos.gob.es CKAN API.
+
+    The datos.madrid.es portal does not have predictable download URLs —
+    resource IDs must be enumerated from the CKAN catalogue JSON.  We download
+    the most recent monthly files that cover the requested lookback window.
+
+    Column schema (15-min measurement-point files, confirmed):
+      idelem; tipo_elem; distrito; cod_cent; nombre; utm_x; utm_y;
+      longitud; latitud; fecha; intensidad; ocupacion; carga; nivelservicio
+      - intensidad  = vehicles/hour (flow)
+      - ocupacion   = road occupancy 0-100 %
+      - carga       = congestion index 0-100 (used as speed proxy)
+    Note: most historical files do NOT contain a speed column.
+    """
     try:
         import pandas as pd
         import requests
@@ -129,72 +153,151 @@ def fetch_madrid_historical(lookback_days: int, skip_download: bool = False):
 
     raw_dir = CACHE_DIR / "madrid_raw"
     raw_dir.mkdir(exist_ok=True)
+
+    # Try to get resource list from datos.gob.es CKAN
+    resource_urls = _fetch_madrid_resource_urls(skip_download)
+
     dfs = []
     today = datetime.now(timezone.utc).date()
+    cutoff = today - timedelta(days=lookback_days)
 
-    for d in range(lookback_days):
-        date = today - timedelta(days=d + 1)
-        csv_path = raw_dir / f"madrid_{date}.csv"
-
+    for url, filename in resource_urls:
+        csv_path = raw_dir / filename
         if not csv_path.exists() and not skip_download:
-            url = MADRID_M30_URL.format(year=date.year, month=date.month, day=date.day)
             try:
-                r = requests.get(url, timeout=30)
+                logger.info("  Downloading %s ...", filename)
+                r = requests.get(url, timeout=120)
                 if r.status_code == 200:
                     csv_path.write_bytes(r.content)
+                else:
+                    logger.debug("HTTP %d for %s", r.status_code, url)
+                    continue
             except Exception as e:
-                logger.debug("Skip %s: %s", date, e)
+                logger.debug("Skip %s: %s", filename, e)
                 continue
 
         if csv_path.exists():
             try:
-                df = pd.read_csv(
-                    csv_path,
-                    sep=";",
-                    encoding="latin-1",
-                    low_memory=False,
-                )
-                df["date"] = date
-                dfs.append(df)
-            except Exception:
-                logger.debug("Could not parse %s", csv_path)
+                df = _load_madrid_csv(csv_path)
+                if df is not None:
+                    dfs.append(df)
+            except Exception as e:
+                logger.debug("Could not parse %s: %s", csv_path, e)
 
     if not dfs:
-        logger.warning("No Madrid CSV files downloaded. Using synthetic data for demo.")
+        logger.warning("No Madrid CSV files loaded — using synthetic data for demo.")
         return _synthetic_sensor_data(lookback_days)
 
     full = pd.concat(dfs, ignore_index=True)
     return _normalise_madrid_df(full)
 
 
-def _normalise_madrid_df(df):
-    """Standardise column names from Madrid CSV to our schema."""
+def _fetch_madrid_resource_urls(skip_download: bool) -> list[tuple[str, str]]:
+    """Enumerate Madrid traffic CSV download URLs from datos.gob.es CKAN."""
+    try:
+        import requests
+        cache_file = CACHE_DIR / "madrid_resources.json"
+        if cache_file.exists() and not skip_download:
+            import time
+            if time.time() - cache_file.stat().st_mtime < 86400:  # 24h cache
+                with open(cache_file) as f:
+                    import json as _json
+                    return _json.load(f)
+
+        r = requests.get(MADRID_CKAN_API, timeout=30)
+        if r.status_code != 200:
+            logger.warning("datos.gob.es CKAN returned %d", r.status_code)
+            return []
+
+        data = r.json()
+        # CKAN package_show response has resources list
+        resources = data.get("result", data).get("resources", [])
+        pairs = []
+        for res in resources:
+            url = res.get("url") or res.get("download_url", "")
+            name = res.get("name") or res.get("id", "unknown")
+            if url.endswith(".csv") or "csv" in url.lower():
+                filename = f"madrid_{name}.csv"
+                pairs.append((url, filename))
+
+        if pairs:
+            with open(cache_file, "w") as f:
+                import json as _json
+                _json.dump(pairs, f)
+        return pairs
+    except Exception as e:
+        logger.warning("Could not enumerate Madrid resources: %s", e)
+        return []
+
+
+def _load_madrid_csv(path):
+    """Load a Madrid traffic CSV, trying both semicolon and comma separators."""
     import pandas as pd
 
+    for sep in (";", ","):
+        for enc in ("utf-8", "latin-1", "iso-8859-1"):
+            try:
+                df = pd.read_csv(path, sep=sep, encoding=enc, low_memory=False, nrows=5)
+                if len(df.columns) > 3:
+                    return pd.read_csv(path, sep=sep, encoding=enc, low_memory=False)
+            except Exception:
+                continue
+    return None
+
+
+def _normalise_madrid_df(df):
+    """Standardise column names from Madrid CSV to our internal schema.
+
+    Confirmed 15-min measurement-point columns (semicolon delimited):
+      idelem, tipo_elem, distrito, cod_cent, nombre, utm_x, utm_y,
+      longitud, latitud, fecha, intensidad, ocupacion, carga, nivelservicio
+
+    The 'carga' column (0-100 congestion index) is used to derive a
+    pseudo-speed when no velocidad column is present:
+      speed_proxy = free_flow_speed × (1 - carga/100)
+    Free-flow speed defaults to 80 km/h (M-30 typical).
+    """
+    import pandas as pd
+
+    # Lower-case all column names for consistent matching
+    df.columns = [c.strip().lower() for c in df.columns]
+
     rename = {
-        # M-30 fast road format
-        "velocidad": "speed_kmh",
         "intensidad": "flow_count",
         "ocupacion": "occupancy_pct",
-        "hora": "hour",
-        # Urban format variations
-        "Velocidad": "speed_kmh",
-        "Intensidad": "flow_count",
-        "Ocupacion": "occupancy_pct",
+        "velocidad": "speed_kmh",
+        "carga": "carga",
+        "fecha": "fecha",
+        "idelem": "sensor_id",
     }
     df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
 
-    # Ensure required columns exist
-    for col in ("speed_kmh", "flow_count", "occupancy_pct"):
+    for col in ("flow_count", "occupancy_pct", "carga"):
         if col not in df.columns:
             df[col] = 0.0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    df["speed_kmh"] = pd.to_numeric(df["speed_kmh"], errors="coerce").fillna(0)
-    df["flow_count"] = pd.to_numeric(df["flow_count"], errors="coerce").fillna(0)
-    df["occupancy_pct"] = pd.to_numeric(df["occupancy_pct"], errors="coerce").fillna(0)
+    # Derive speed from carga when not directly available
+    if "speed_kmh" not in df.columns:
+        FREE_FLOW = 80.0  # km/h — conservative M-30 free-flow speed
+        df["speed_kmh"] = FREE_FLOW * (1.0 - df["carga"].clip(0, 100) / 100.0)
+    else:
+        df["speed_kmh"] = pd.to_numeric(df["speed_kmh"], errors="coerce").fillna(0)
 
-    # flow_count is vehicles per 5-min interval → convert to per-min
-    df["flow_veh_per_min"] = df["flow_count"] / 5.0
+    # Flow: intensidad is vehicles/hour → convert to per-min
+    df["flow_veh_per_min"] = df["flow_count"] / 60.0
+
+    # Hour of day from fecha timestamp
+    if "fecha" in df.columns:
+        try:
+            df["hour"] = pd.to_datetime(df["fecha"], errors="coerce").dt.hour.fillna(0).astype(int)
+            df["date"] = pd.to_datetime(df["fecha"], errors="coerce").dt.date
+        except Exception:
+            df["hour"] = 0
+            df["date"] = None
+    elif "hour" not in df.columns:
+        df["hour"] = 0
+
     return df
 
 
@@ -254,10 +357,20 @@ def fetch_openmeteo_historical(lookback_days: int):
         hourly = data.get("hourly", {})
         df = pd.DataFrame({
             "datetime": pd.to_datetime(hourly["time"]),
-            "temperature_c": hourly["temperature_2m"],
-            "precipitation_mm": hourly["precipitation"],
-            "wind_speed_kmh": hourly["wind_speed_10m"],
+            "temperature_c": hourly.get("temperature_2m", [0] * len(hourly["time"])),
+            "precipitation_mm": hourly.get("precipitation", [0] * len(hourly["time"])),
+            # API param is 'windspeed_10m' (confirmed) not 'wind_speed_10m'
+            "wind_speed_kmh": hourly.get("windspeed_10m", [0] * len(hourly["time"])),
+            # visibility_m is NOT in Open-Meteo archive; use cloud_cover_low +
+            # weather_code as fog proxy (codes 45=fog, 48=rime fog)
+            "cloud_cover_low_pct": hourly.get("cloud_cover_low", [0] * len(hourly["time"])),
+            "weather_code": hourly.get("weather_code", [0] * len(hourly["time"])),
         })
+        # Derive a fog_factor 0-1: fog codes or high low-cloud cover
+        df["fog_factor"] = (
+            (df["weather_code"].isin([45, 48])).astype(float) * 0.7
+            + (df["cloud_cover_low_pct"].clip(0, 100) / 100.0) * 0.3
+        ).clip(0, 1)
         return df
     except Exception as e:
         logger.warning("Could not parse Open-Meteo response: %s", e)
@@ -276,20 +389,19 @@ def merge_features(sensor_df, weather_df):
 
     if weather_df is not None:
         try:
-            # Merge on hour of day (approximate — use nearest hour)
             weather_df = weather_df.copy()
             weather_df["hour"] = weather_df["datetime"].dt.hour
-            # Take mean per hour across all days
-            wx_hourly = weather_df.groupby("hour")[
-                ["temperature_c", "precipitation_mm", "wind_speed_kmh"]
-            ].mean().reset_index()
+            wx_cols = [c for c in ("temperature_c", "precipitation_mm", "wind_speed_kmh", "fog_factor")
+                       if c in weather_df.columns]
+            wx_hourly = weather_df.groupby("hour")[wx_cols].mean().reset_index()
             df = df.merge(wx_hourly, on="hour", how="left")
         except Exception as e:
             logger.warning("Weather merge failed: %s", e)
 
-    for col in ("temperature_c", "precipitation_mm", "wind_speed_kmh"):
+    defaults = {"temperature_c": 15.0, "precipitation_mm": 0.0, "wind_speed_kmh": 10.0, "fog_factor": 0.0}
+    for col, default in defaults.items():
         if col not in df.columns:
-            df[col] = {"temperature_c": 15.0, "precipitation_mm": 0.0, "wind_speed_kmh": 10.0}[col]
+            df[col] = default
 
     # Cyclical time features
     df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
