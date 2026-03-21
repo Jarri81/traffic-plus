@@ -122,14 +122,23 @@ try {
     Write-Warn "You may need to run manually: alembic upgrade head"
 }
 
-# ── 7. Frontend dependencies ──────────────────────────────────
+# ── 7. Seed demo data ─────────────────────────────────────────
+Write-Step "Seeding demo data (idempotent)..."
+try {
+    & $python "$ROOT\scripts\seed_demo_data.py" 2>&1 | Out-Null
+    Write-OK "Demo segments + admin user ready"
+} catch {
+    Write-Warn "Seed script failed (may be a fresh DB — check logs): $_"
+}
+
+# ── 8. Frontend dependencies ──────────────────────────────────
 Write-Step "Installing frontend dependencies..."
 Push-Location "$ROOT\frontend"
 npm install --silent
 Pop-Location
 Write-OK "Frontend dependencies ready"
 
-# ── 8. Launch dev processes in new windows ────────────────────
+# ── 9. Launch dev processes in new windows ────────────────────
 Write-Step "Launching dev servers..."
 
 # FastAPI
@@ -146,11 +155,22 @@ Start-Process powershell -ArgumentList @(
     "& '$celery' -A traffic_ai.celery_app worker --loglevel=info --concurrency=2"
 ) -WindowStyle Normal
 
+# Celery beat (scheduler — drives camera/weather/risk ingestors)
+Start-Process powershell -ArgumentList @(
+    "-NoExit", "-Command",
+    "Set-Location '$ROOT'; `$env:PYTHONPATH='$ROOT\src'; " +
+    "& '$celery' -A traffic_ai.celery_app beat --loglevel=info"
+) -WindowStyle Normal
+
 # Vite dev server
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
     "Set-Location '$ROOT\frontend'; npm run dev"
 ) -WindowStyle Normal
+
+# Brief pause then open browser
+Start-Sleep -Seconds 4
+Start-Process "http://localhost:5173"
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Green
@@ -159,7 +179,10 @@ Write-Host "============================================" -ForegroundColor Green
 Write-Host "  API:       http://localhost:8000"
 Write-Host "  API docs:  http://localhost:8000/docs"
 Write-Host "  Frontend:  http://localhost:5173"
+Write-Host "  Celery:    worker + beat running"
 Write-Host "  Flower:    run 'docker compose up -d flower' to enable"
 Write-Host "============================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Admin login: admin@traffic-ai.local / Traffic2024!" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "To stop infrastructure: .\dev-stop.ps1" -ForegroundColor Gray
