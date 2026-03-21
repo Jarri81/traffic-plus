@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Shield, Key, Users, Server, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import PageContainer from '../components/ui/PageContainer';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import api from '../api/client';
+import { fetchAppSettings, updateAppSettings } from '../api/appSettings';
 
 interface InputFieldProps { label: string; value: string; type?: string; disabled?: boolean; }
 
@@ -58,6 +59,27 @@ export default function Settings() {
   const [healthLoading, setHealthLoading] = useState(false);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
 
+  const [webhookUrl, setWebhookUrl] = useState('');
+  const [webhookSaving, setWebhookSaving] = useState(false);
+  const [webhookSaved, setWebhookSaved] = useState(false);
+  const webhookTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    fetchAppSettings().then((s) => setWebhookUrl(s.webhook_url)).catch(() => {});
+  }, []);
+
+  async function saveWebhook() {
+    setWebhookSaving(true);
+    try {
+      await updateAppSettings({ webhook_url: webhookUrl });
+      setWebhookSaved(true);
+      if (webhookTimer.current) clearTimeout(webhookTimer.current);
+      webhookTimer.current = setTimeout(() => setWebhookSaved(false), 2500);
+    } finally {
+      setWebhookSaving(false);
+    }
+  }
+
   async function loadHealth() {
     setHealthLoading(true);
     try {
@@ -96,7 +118,30 @@ export default function Settings() {
           <InputField label="Organization Name" value="Traffic AI Platform" />
           <InputField label="Deployment Region" value="Madrid, Spain" />
           <InputField label="Admin Email" value="admin@traffic-ai.local" type="email" />
-          <InputField label="Notification Webhook" value="" />
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-medium text-[#5E6A7A] tracking-[0.01em] uppercase">Notification Webhook</label>
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={webhookUrl}
+                onChange={(e) => setWebhookUrl(e.target.value)}
+                placeholder="https://hooks.slack.com/…"
+                className="flex-1 bg-[#111820] border border-[#1E2A3A] rounded-lg px-3 py-2 text-[13px] text-[#F4F5F7] outline-none focus:border-[#D4915E] transition-all"
+              />
+              <button
+                onClick={saveWebhook}
+                disabled={webhookSaving}
+                className={clsx(
+                  'px-3 py-2 rounded-lg text-[12px] font-medium border transition-all whitespace-nowrap',
+                  webhookSaved
+                    ? 'border-[#4EA86A] text-[#4EA86A] bg-[#4EA86A]/10'
+                    : 'border-[#1E2A3A] text-[#9BA3B0] hover:border-[#D4915E] hover:text-[#D4915E]',
+                )}
+              >
+                {webhookSaved ? 'Saved ✓' : webhookSaving ? '…' : 'Save'}
+              </button>
+            </div>
+          </div>
         </div>
         <div className="mb-5">
           <label className="text-[11px] font-medium text-[#5E6A7A] tracking-[0.01em] uppercase mb-2 block">Deployment Tier</label>
@@ -116,7 +161,6 @@ export default function Settings() {
             })}
           </div>
         </div>
-        <Button>Save Changes</Button>
       </Card>
 
       <Card>

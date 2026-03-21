@@ -125,3 +125,15 @@ class UserRegister(BaseModel):
     email: str
     password: str = Field(min_length=8)
     name: Optional[str] = None
+
+
+class UserRoleUpdate(BaseModel):
+    """Request body to update a user's role."""
+    role: str = Field(pattern="^(viewer|operator|admin)$")
+
+class UserCreate(BaseModel):
+    """Admin-initiated user creation."""
+    email: str
+    password: str = Field(min_length=8)
+    name: Optional[str] = None
+    role: str = Field(default="viewer", pattern="^(viewer|operator|admin)$")

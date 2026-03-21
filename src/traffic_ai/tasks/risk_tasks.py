@@ -27,6 +27,17 @@ def compute_risk_score(self, segment_id: str, pilot: str = "default") -> dict:
 
         # Persist score to InfluxDB for trend charts
         await _write_risk_score(segment_id, score, result.get("level", "low"))
+
+        # Fire webhook for critical risk segments
+        if result.get("level") == "critical":
+            from traffic_ai.utils.webhook import fire_webhook  # noqa: PLC0415
+            await fire_webhook("risk.critical", {
+                "segment_id": segment_id,
+                "score": score,
+                "level": result.get("level"),
+                "pilot": pilot,
+            })
+
         return {**result, "alert_actions": actions}
 
     loop = asyncio.new_event_loop()

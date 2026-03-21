@@ -15,6 +15,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _image_url(cam_id: str, source: str) -> str:
+    if source == "dgt":
+        return f"https://infocar.dgt.es/etraffic/data/camaras/{cam_id}.jpg"
+    # Madrid IDs stored as "madrid_123" — strip prefix
+    numeric = cam_id.removeprefix("madrid_")
+    import time as _time
+    return f"https://informo.madrid.es/cameras/Camara{numeric}.jpg?v={int(_time.time())}"
+
+
 @router.get("/cameras")
 async def list_cameras(
     source: str | None = Query(None, description="Filter by source: dgt | madrid"),
@@ -47,6 +56,7 @@ async def list_cameras(
                     "density_level": _density_level(float(row.get("density_score") or 0)),
                     "camera_online": bool(online),
                     "last_seen": row.get("_time", datetime.now(timezone.utc).isoformat()),
+                    "image_url": _image_url(cam_id, src_label),
                 })
         except Exception:
             logger.exception("Failed to query %s camera metrics", measurement)
@@ -134,5 +144,6 @@ def _empty_camera_list(source: str | None) -> list[dict]:
                 "density_level": "unknown",
                 "camera_online": False,
                 "last_seen": None,
+                "image_url": None,
             })
     return stubs

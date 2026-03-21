@@ -39,17 +39,29 @@ function cameraStatus(cam: CameraMetric): 'online' | 'offline' {
 }
 
 function CameraCard({ cam }: { cam: CameraMetric }) {
+  const [imgError, setImgError] = useState(false);
   const status = cameraStatus(cam);
   const densityColor = densityColors[cam.density_level] ?? densityColors.unknown;
   const lastSeen = cam.last_seen
     ? formatDistanceToNow(new Date(cam.last_seen), { addSuffix: true })
     : 'No data';
 
+  const showImage = cam.camera_online && cam.image_url && !imgError;
+
   return (
     <div className="bg-[#1A2230] border border-[#1E2A3A] rounded-xl overflow-hidden transition-all duration-150 ease-in-out hover:border-[#2A3A4E]">
-      {/* Camera feed placeholder */}
+      {/* Camera feed */}
       <div className="aspect-video bg-[#111820] flex items-center justify-center relative">
-        <Camera size={28} className="text-[#232E3F]" />
+        {showImage ? (
+          <img
+            src={cam.image_url!}
+            alt={cam.id}
+            className="absolute inset-0 w-full h-full object-cover"
+            onError={() => setImgError(true)}
+          />
+        ) : (
+          <Camera size={28} className="text-[#232E3F]" />
+        )}
 
         {/* Status badge */}
         <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 bg-[rgba(17,24,32,0.8)] backdrop-blur-sm px-2 py-1 rounded-md">

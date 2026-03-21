@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # JSON array of {lat, lon, name} objects for Open-Meteo live weather ingestor.
     # Defaults to Madrid city centre when empty.
     open_meteo_locations: str = ""
+    # Webhook URL for high-severity event notifications. Can also be set at
+    # runtime via PATCH /api/v1/settings (stored in Redis).
+    webhook_url: str = ""
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @property

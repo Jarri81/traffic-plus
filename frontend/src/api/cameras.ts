@@ -9,6 +9,7 @@ export interface CameraMetric {
   density_level: string;
   camera_online: boolean;
   last_seen: string | null;
+  image_url?: string | null;
 }
 
 export interface CameraStats {

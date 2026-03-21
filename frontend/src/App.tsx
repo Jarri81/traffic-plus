@@ -13,6 +13,7 @@ import Weather from './pages/Weather';
 import MapView from './pages/MapView';
 import Settings from './pages/Settings';
 import Predictions from './pages/Predictions';
+import Users from './pages/Users';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -41,6 +42,7 @@ export default function App() {
                 <Route path="/cameras" element={<Cameras />} />
                 <Route path="/alerts" element={<Alerts />} />
                 <Route path="/weather" element={<Weather />} />
+                <Route path="/users" element={<Users />} />
                 <Route path="/settings" element={<Settings />} />
               </Route>
             </Route>
