@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Camera, Grid2x2, Grid3x3, LayoutGrid, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import { formatDistanceToNow } from 'date-fns';
@@ -38,23 +38,42 @@ function cameraStatus(cam: CameraMetric): 'online' | 'offline' {
   return age < 10 * 60_000 ? 'online' : 'offline';
 }
 
+// DGT snapshots refresh every ~3 min; Madrid every ~5 min. We append a
+// timestamp query param every 60 s so the browser fetches the latest frame.
+const SNAPSHOT_REFRESH_MS = 60_000;
+
 function CameraCard({ cam }: { cam: CameraMetric }) {
   const [imgError, setImgError] = useState(false);
+  const [tick, setTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!cam.camera_online || !cam.image_url) return;
+    const id = setInterval(() => {
+      setImgError(false);        // retry on next tick in case it recovered
+      setTick(Date.now());
+    }, SNAPSHOT_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [cam.camera_online, cam.image_url]);
+
   const status = cameraStatus(cam);
   const densityColor = densityColors[cam.density_level] ?? densityColors.unknown;
   const lastSeen = cam.last_seen
     ? formatDistanceToNow(new Date(cam.last_seen), { addSuffix: true })
     : 'No data';
 
-  const showImage = cam.camera_online && cam.image_url && !imgError;
+  // Append cache-bust param so the browser refetches instead of serving stale
+  const imgSrc = cam.image_url
+    ? `${cam.image_url.split('?')[0]}?v=${tick}`
+    : null;
+  const showImage = cam.camera_online && imgSrc && !imgError;
 
   return (
     <div className="bg-[#1A2230] border border-[#1E2A3A] rounded-xl overflow-hidden transition-all duration-150 ease-in-out hover:border-[#2A3A4E]">
-      {/* Camera feed */}
+      {/* Camera feed — auto-refreshes every 60 s */}
       <div className="aspect-video bg-[#111820] flex items-center justify-center relative">
         {showImage ? (
           <img
-            src={cam.image_url!}
+            src={imgSrc}
             alt={cam.id}
             className="absolute inset-0 w-full h-full object-cover"
             onError={() => setImgError(true)}
