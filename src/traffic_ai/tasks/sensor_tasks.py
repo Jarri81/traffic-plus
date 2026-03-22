@@ -145,6 +145,46 @@ def poll_madrid_cameras(self) -> dict:
         loop.close()
 
 
+# ── Madrid real-time traffic state (Informo tramos) ──────────────────────────
+
+@app.task(name="traffic_ai.tasks.sensor_tasks.poll_madrid_traffic_state", bind=True, max_retries=2)
+def poll_madrid_traffic_state(self) -> dict:
+    """Fetch Madrid per-tramo real-time state from informo.madrid.es XML (5-min)."""
+    from traffic_ai.ingestors.madrid_traffic_state import MadridTrafficStateIngestor
+    ingestor = MadridTrafficStateIngestor()
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(ingestor.start())
+        results = loop.run_until_complete(ingestor.poll())
+        logger.info("Madrid traffic state: ingested %d tramo readings", len(results))
+        return {"ingested": len(results), "source": "madrid_traffic_state"}
+    except Exception as exc:
+        logger.exception("Madrid traffic state ingestor failed")
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        loop.close()
+
+
+# ── Valencia real-time traffic state ─────────────────────────────────────────
+
+@app.task(name="traffic_ai.tasks.sensor_tasks.poll_valencia_traffic", bind=True, max_retries=2)
+def poll_valencia_traffic(self) -> dict:
+    """Fetch Valencia city real-time traffic state from RTOD open API (3-min)."""
+    from traffic_ai.ingestors.valencia_traffic import ValenciaTrafficIngestor
+    ingestor = ValenciaTrafficIngestor()
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(ingestor.start())
+        results = loop.run_until_complete(ingestor.poll())
+        logger.info("Valencia traffic: ingested %d segment readings", len(results))
+        return {"ingested": len(results), "source": "valencia_traffic"}
+    except Exception as exc:
+        logger.exception("Valencia traffic ingestor failed")
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        loop.close()
+
+
 # ── Baseline recalculation ───────────────────────────────────────────────────
 
 @app.task(name="traffic_ai.tasks.sensor_tasks.recalculate_baselines")

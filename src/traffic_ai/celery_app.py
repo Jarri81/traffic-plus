@@ -43,6 +43,16 @@ app.conf.beat_schedule = {
         "task": "traffic_ai.tasks.sensor_tasks.poll_madrid_cameras",
         "schedule": 300.0,
     },
+    # ── Madrid Informo per-tramo traffic state — updated every 5 min
+    "poll-madrid-traffic-state": {
+        "task": "traffic_ai.tasks.sensor_tasks.poll_madrid_traffic_state",
+        "schedule": 300.0,  # every 5 min — matches Informo update rate
+    },
+    # ── Valencia city real-time traffic state — updated every 3 min
+    "poll-valencia-traffic": {
+        "task": "traffic_ai.tasks.sensor_tasks.poll_valencia_traffic",
+        "schedule": 180.0,  # every 3 min — matches Valencia update rate
+    },
     # ── Weather
     "poll-weather": {
         "task": "traffic_ai.tasks.weather_tasks.poll_all_weather",
