@@ -50,49 +50,77 @@ _NS = {
 }
 
 
+_STRATEGY_KEY = "camera:strategy"
+_DEFAULT_STRATEGY: dict[str, Any] = {
+    "mode": "all",         # "all" | "roads" | "bbox"
+    "roads": [],           # list of road names for "roads" mode
+    "bbox": {},            # {lat_min, lat_max, lon_min, lon_max} for "bbox" mode
+    "batch_size": 400,
+    "semaphore": 30,
+}
+
+
+def _read_strategy() -> dict[str, Any]:
+    """Read camera strategy from Redis. Falls back to defaults if unavailable."""
+    try:
+        import redis as _redis, json
+        r = _redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+        raw = r.get(_STRATEGY_KEY)
+        r.close()
+        if raw:
+            stored = json.loads(raw)
+            return {**_DEFAULT_STRATEGY, **stored}
+    except Exception:
+        pass
+    return dict(_DEFAULT_STRATEGY)
+
+
 class DGTCameraIngestor(BaseIngestor):
     """Ingests traffic metrics from DGT national camera network."""
 
-    def __init__(self, max_cameras: int | None = None) -> None:
+    def __init__(self) -> None:
         super().__init__(name="dgt_cameras")
-        profile = get_profile()
-        self.max_cameras = max_cameras or profile.max_cameras
         self._cameras: list[dict[str, Any]] = []  # [{id, road, lat, lon, url}]
         self._camera_index: int = 0  # round-robin cursor
 
     async def start(self) -> None:
         self._running = True
-        await self._load_camera_list()
-        self.logger.info(
-            "DGTCameraIngestor started — %d cameras available, polling %d per cycle",
-            len(self._cameras),
-            self.max_cameras,
-        )
+        if not self._cameras:
+            await self._load_camera_list()
+        self.logger.info("DGTCameraIngestor started — %d cameras loaded", len(self._cameras))
 
     async def stop(self) -> None:
         self._running = False
 
     async def poll(self) -> list[dict[str, Any]]:
-        """Process cameras in round-robin batches with bounded HTTP concurrency.
+        """Process one batch of cameras using strategy and params from Redis.
 
-        Processes BATCH_SIZE cameras per cycle, rotating through the full list
-        over multiple cycles. This keeps memory and CPU within t4g.small limits.
+        Strategy (mode/roads/bbox) filters the active camera set.
+        batch_size and semaphore are read from Redis so the admin panel
+        can tune them without redeploying.
         """
-        BATCH_SIZE = 200
-
         if not self._cameras:
             await self._load_camera_list()
             if not self._cameras:
                 return []
 
-        total = len(self._cameras)
-        start = self._camera_index % total
-        batch = self._cameras[start:start + BATCH_SIZE]
-        if len(batch) < BATCH_SIZE:
-            batch += self._cameras[:BATCH_SIZE - len(batch)]
-        self._camera_index = (start + BATCH_SIZE) % total
+        strategy = _read_strategy()
+        batch_size = max(50, min(800, int(strategy.get("batch_size", 400))))
+        semaphore  = max(5,  min(80,  int(strategy.get("semaphore",  30))))
 
-        sem = asyncio.Semaphore(8)
+        active = _apply_strategy(self._cameras, strategy)
+        if not active:
+            self.logger.warning("Camera strategy filtered to 0 cameras — falling back to all")
+            active = self._cameras
+
+        total = len(active)
+        start = self._camera_index % total
+        batch = active[start:start + batch_size]
+        if len(batch) < batch_size:
+            batch += active[:batch_size - len(batch)]
+        self._camera_index = (start + batch_size) % total
+
+        sem = asyncio.Semaphore(semaphore)
 
         async def _bounded(cam: dict[str, Any]) -> dict[str, Any] | None:
             async with sem:
@@ -220,6 +248,32 @@ def _sort_by_priority(cameras: list[dict]) -> list[dict]:
                 return 0
         return 1
     return sorted(cameras, key=_priority)
+
+
+def _apply_strategy(cameras: list[dict], strategy: dict[str, Any]) -> list[dict]:
+    """Filter camera list according to strategy mode."""
+    mode = strategy.get("mode", "all")
+    if mode == "roads":
+        roads = {r.upper().strip() for r in strategy.get("roads", []) if r}
+        if not roads:
+            return cameras
+        return [c for c in cameras if any(r in (c.get("road") or "").upper() for r in roads)]
+    if mode == "bbox":
+        bbox = strategy.get("bbox", {})
+        try:
+            lat_min = float(bbox["lat_min"])
+            lat_max = float(bbox["lat_max"])
+            lon_min = float(bbox["lon_min"])
+            lon_max = float(bbox["lon_max"])
+        except (KeyError, TypeError, ValueError):
+            return cameras
+        return [
+            c for c in cameras
+            if c.get("lat") and c.get("lon")
+            and lat_min <= float(c["lat"]) <= lat_max
+            and lon_min <= float(c["lon"]) <= lon_max
+        ]
+    return cameras  # "all"
 
 
 # ── Redis round-robin helper ─────────────────────────────────────────────────
