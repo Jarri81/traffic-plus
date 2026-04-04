@@ -73,18 +73,24 @@ class DGTCameraIngestor(BaseIngestor):
         self._running = False
 
     async def poll(self) -> list[dict[str, Any]]:
-        """Process all cameras with bounded HTTP concurrency (semaphore=50).
+        """Process cameras in round-robin batches with bounded HTTP concurrency.
 
-        Round-robin is replaced by full-sweep: every poll visits every camera,
-        limited only by HTTP concurrency (50 parallel requests) so DGT servers
-        are not hammered and the event loop stays responsive.
-        With ~1,900 cameras and 50 concurrent fetches the sweep takes ~80s,
-        well within the 120s balanced-profile beat interval.
+        Processes BATCH_SIZE cameras per cycle, rotating through the full list
+        over multiple cycles. This keeps memory and CPU within t4g.small limits.
         """
+        BATCH_SIZE = 200
+
         if not self._cameras:
             await self._load_camera_list()
             if not self._cameras:
                 return []
+
+        total = len(self._cameras)
+        start = self._camera_index % total
+        batch = self._cameras[start:start + BATCH_SIZE]
+        if len(batch) < BATCH_SIZE:
+            batch += self._cameras[:BATCH_SIZE - len(batch)]
+        self._camera_index = (start + BATCH_SIZE) % total
 
         sem = asyncio.Semaphore(8)
 
@@ -94,7 +100,7 @@ class DGTCameraIngestor(BaseIngestor):
 
         async with aiohttp.ClientSession() as session:
             raw = await asyncio.gather(
-                *[_bounded(cam) for cam in self._cameras],
+                *[_bounded(cam) for cam in batch],
                 return_exceptions=True,
             )
 
