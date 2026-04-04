@@ -86,7 +86,7 @@ class DGTCameraIngestor(BaseIngestor):
             if not self._cameras:
                 return []
 
-        sem = asyncio.Semaphore(15)
+        sem = asyncio.Semaphore(8)
 
         async def _bounded(cam: dict[str, Any]) -> dict[str, Any] | None:
             async with sem:
