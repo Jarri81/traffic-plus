@@ -13,6 +13,7 @@ Data sources (no auth, CC BY 4.0):
 Same ONNX inference logic as DGTCameraIngestor (shared _detect_vehicles → ml.vehicle_detector).
 """
 from __future__ import annotations
+import asyncio
 import logging
 import time
 import xml.etree.ElementTree as ET
@@ -24,12 +25,12 @@ import aiohttp
 from traffic_ai.config import get_profile
 from traffic_ai.db.influx import write_points
 from traffic_ai.ingestors.base import BaseIngestor
-from traffic_ai.ingestors.dgt_cameras import _detect_vehicles, _to_line_madrid
+from traffic_ai.ingestors.dgt_cameras import _advance_camera_index, _detect_vehicles, _to_line_madrid
 
 logger = logging.getLogger(__name__)
 
 MADRID_CAMERA_KML_URL = (
-    "https://datos.madrid.es/egob/catalogo/202088-0-trafico-camaras.kml"
+    "https://informo.madrid.es/informo/tmadrid/CCTV.kml"
 )
 MADRID_IMAGE_URL = "https://informo.madrid.es/cameras/Camara{camera_id}.jpg?v={ts}"
 
@@ -63,19 +64,17 @@ class MadridCameraIngestor(BaseIngestor):
 
         total = len(self._cameras)
         batch_size = min(self.max_cameras, total)
-        indices = [(self._camera_index + i) % total for i in range(batch_size)]
-        self._camera_index = (self._camera_index + batch_size) % total
-        batch = [self._cameras[i] for i in indices]
-
-        results: list[dict[str, Any]] = []
-        lines: list[str] = []
+        start = _advance_camera_index("madrid_camera:index", batch_size, total)
+        batch = [self._cameras[(start + i) % total] for i in range(batch_size)]
 
         async with aiohttp.ClientSession() as session:
-            for cam in batch:
-                result = await self._process_camera(session, cam)
-                if result:
-                    results.append(result)
-                    lines.append(_to_line_madrid(result))
+            raw = await asyncio.gather(
+                *[self._process_camera(session, cam) for cam in batch],
+                return_exceptions=True,
+            )
+
+        results = [r for r in raw if r and not isinstance(r, Exception)]
+        lines = [_to_line_madrid(r) for r in results]
 
         if lines:
             try:
@@ -84,8 +83,8 @@ class MadridCameraIngestor(BaseIngestor):
                 self.logger.exception("Failed to write Madrid camera metrics")
 
         self.logger.info(
-            "Madrid cameras: processed %d/%d, wrote %d metrics",
-            len(results), len(batch), len(lines),
+            "Madrid cameras: processed %d/%d in parallel, wrote %d metrics",
+            len(results), batch_size, len(lines),
         )
         return results
 
@@ -134,44 +133,49 @@ class MadridCameraIngestor(BaseIngestor):
 
 
 def _parse_madrid_kml(kml_bytes: bytes) -> list[dict[str, Any]]:
-    """Parse Madrid camera KML. Each Placemark has a camera ID and coordinates."""
+    """Parse Madrid camera KML. Each Placemark has a camera ID and coordinates.
+
+    The feed uses the KML 2.2 namespace on <Placemark> but ExtendedData,
+    Data, Value, and coordinates elements have no namespace prefix.
+    """
     cameras: list[dict[str, Any]] = []
     try:
-        root = ET.fromstring(kml_bytes)
+        # Strip UTF-8 BOM if present
+        xml_str = kml_bytes.decode("utf-8-sig") if isinstance(kml_bytes, bytes) else kml_bytes
+        root = ET.fromstring(xml_str)
     except ET.ParseError:
         logger.warning("Failed to parse Madrid camera KML")
         return cameras
 
-    ns = {"kml": "http://www.opengis.net/kml/2.2"}
+    ns = "http://earth.google.com/kml/2.2"
 
-    for placemark in root.iter("{http://www.opengis.net/kml/2.2}Placemark"):
-        name_elem = placemark.find("kml:name", ns)
-        name = (name_elem.text or "").strip() if name_elem is not None else ""
-
-        # Camera ID is usually in a <description> or <ExtendedData> field
+    for placemark in root.iter(f"{{{ns}}}Placemark"):
         camera_id = None
-        desc_elem = placemark.find("kml:description", ns)
-        if desc_elem is not None and desc_elem.text:
-            # Description may contain "Camara123" or just the numeric ID
-            text = desc_elem.text.strip()
-            import re
-            match = re.search(r"[Cc]amara(\d+)|^(\d+)$", text)
-            if match:
-                camera_id = match.group(1) or match.group(2)
+        name = ""
 
-        if not camera_id:
-            # Try to extract from name
-            import re
-            match = re.search(r"\d+", name)
-            if match:
-                camera_id = match.group(0)
+        # ExtendedData and Data/Value have no namespace in this feed
+        ext = placemark.find("ExtendedData")
+        if ext is None:
+            ext = placemark.find(f"{{{ns}}}ExtendedData")
+        if ext is not None:
+            for data_elem in list(ext) + list(ext.iter()):
+                tag = data_elem.tag.split("}")[-1] if "}" in data_elem.tag else data_elem.tag
+                if tag != "Data":
+                    continue
+                attr = data_elem.get("name", "")
+                val_elem = data_elem.find("Value") or data_elem.find(f"{{{ns}}}Value")
+                val = val_elem.text.strip() if val_elem is not None and val_elem.text else ""
+                if attr == "Numero":
+                    camera_id = val
+                elif attr == "Nombre":
+                    name = val
 
         if not camera_id:
             continue
 
-        # Coordinates: "lon,lat[,alt]"
+        # Coordinates: "lon,lat[,alt]" — no namespace
         lat = lon = None
-        coords_elem = placemark.find(".//kml:coordinates", ns)
+        coords_elem = placemark.find(".//coordinates") or placemark.find(f".//{{{ns}}}coordinates")
         if coords_elem is not None and coords_elem.text:
             parts = coords_elem.text.strip().split(",")
             if len(parts) >= 2:

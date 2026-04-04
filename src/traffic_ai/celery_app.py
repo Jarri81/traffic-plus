@@ -74,9 +74,11 @@ app.conf.beat_schedule = {
         "task": "traffic_ai.tasks.risk_tasks.compute_all_risk_scores",
         "schedule": float(_profile.risk_compute_interval_s),
     },
-    # ── Baseline recalculation from InfluxDB history
-    "recalculate-baselines": {
-        "task": "traffic_ai.tasks.sensor_tasks.recalculate_baselines",
-        "schedule": float(_profile.baseline_recalc_interval_s),
-    },
+    # ── Baseline recalculation — disabled until loop detector data exists
+    # Iterates 2.7M segments × InfluxDB queries — prohibitively slow with no data.
+    # Re-enable once loop_detector measurements appear in InfluxDB.
+    # "recalculate-baselines": {
+    #     "task": "traffic_ai.tasks.sensor_tasks.recalculate_baselines",
+    #     "schedule": float(_profile.baseline_recalc_interval_s),
+    # },
 }
