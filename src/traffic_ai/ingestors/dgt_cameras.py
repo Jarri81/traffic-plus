@@ -170,7 +170,12 @@ class DGTCameraIngestor(BaseIngestor):
         )
 
     async def _load_camera_list(self) -> None:
-        """Fetch DATEX II XML and parse camera ID + URL list."""
+        """Fetch DATEX II XML and parse camera ID + URL list.
+
+        Cameras are sorted so major Spanish highways come first in every
+        round-robin rotation, ensuring the most traffic-critical roads are
+        always covered even if a sweep is interrupted.
+        """
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -185,10 +190,36 @@ class DGTCameraIngestor(BaseIngestor):
                     xml_bytes = await resp.read()
 
             cameras = _parse_dgt_datex2(xml_bytes)
-            self._cameras = cameras
+            self._cameras = _sort_by_priority(cameras)
             self.logger.info("Loaded %d cameras from DGT DATEX II feed", len(cameras))
         except Exception:
             self.logger.exception("Failed to load DGT camera list")
+
+
+# ── Highway priority sort ────────────────────────────────────────────────────
+
+_PRIORITY_ROADS = {
+    # Tier 1 — Madrid ring roads and radials (highest traffic)
+    "M-30", "M-40", "M-50", "M-45", "M-60",
+    "A-1", "A-2", "A-3", "A-4", "A-5", "A-6",
+    # Tier 2 — National highways
+    "AP-7", "AP-6", "AP-36", "AP-41",
+    "A-7", "A-8", "A-9", "A-92",
+    "N-I", "N-II", "N-III", "N-IV", "N-V", "N-VI",
+    # Tier 3 — Barcelona
+    "B-10", "B-20", "B-23", "C-31", "C-32", "C-33", "C-58",
+}
+
+
+def _sort_by_priority(cameras: list[dict]) -> list[dict]:
+    """Return cameras sorted: major highways first, then all others."""
+    def _priority(cam: dict) -> int:
+        road = (cam.get("road") or "").upper()
+        for r in _PRIORITY_ROADS:
+            if r in road:
+                return 0
+        return 1
+    return sorted(cameras, key=_priority)
 
 
 # ── Redis round-robin helper ─────────────────────────────────────────────────

@@ -32,11 +32,12 @@ app.conf.beat_schedule = {
         "task": "traffic_ai.tasks.sensor_tasks.poll_dgt_incidents",
         "schedule": 180.0,  # every 3 min — DGT refreshes ~every 3 min
     },
-    # ── DGT national cameras — full sweep, semaphore-bounded
-    # Reduced to 10 min to avoid saturating CPU on t4g.small with ONNX inference
+    # ── DGT national cameras — Redis-locked, back-to-back batches of 200
+    # Beat fires every 30s; Redis lock prevents overlapping runs.
+    # Effective throughput: ~200 cameras/batch, continuous rotation.
     "poll-dgt-cameras": {
         "task": "traffic_ai.tasks.sensor_tasks.poll_dgt_cameras",
-        "schedule": 600.0,  # every 10 min — CPU-bound on ARM t4g.small
+        "schedule": 30.0,
     },
     # ── Madrid city cameras — round-robin, 5-min official refresh
     "poll-madrid-cameras": {

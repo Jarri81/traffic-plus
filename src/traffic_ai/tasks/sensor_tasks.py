@@ -39,22 +39,10 @@ def poll_loop_detectors() -> dict:
 
 # ── Madrid Ayuntamiento loop detectors ───────────────────────────────────────
 
-@app.task(name="traffic_ai.tasks.sensor_tasks.poll_madrid_loops", bind=True, max_retries=2)
+@app.task(name="traffic_ai.tasks.sensor_tasks.poll_madrid_loops", bind=True, max_retries=0)
 def poll_madrid_loops(self) -> dict:
-    """Fetch Madrid real-time traffic intensity from datos.madrid.es (5-min CSV)."""
-    from traffic_ai.ingestors.madrid_loops import MadridLoopIngestor
-    ingestor = MadridLoopIngestor()
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(ingestor.start())
-        results = loop.run_until_complete(ingestor.poll())
-        logger.info("Madrid loops: ingested %d sensor readings", len(results))
-        return {"ingested": len(results), "source": "madrid_loops"}
-    except Exception as exc:
-        logger.exception("Madrid loop ingestor failed")
-        raise self.retry(exc=exc, countdown=60)
-    finally:
-        loop.close()
+    """Legacy task — datos.madrid.es CSV feed replaced by pm.xml (poll_madrid_traffic_state)."""
+    return {"ingested": 0, "source": "madrid_loops"}
 
 
 # ── Barcelona Open Data BCN ──────────────────────────────────────────────────
@@ -83,12 +71,12 @@ def poll_barcelona(self) -> dict:
 def poll_dgt_incidents(self) -> dict:
     """Fetch DGT national road incidents from DATEX II XML feed."""
     from traffic_ai.ingestors.dgt_incidents import DGTIncidentsIngestor
-    from traffic_ai.db.database import init_db, async_session_factory
+    import traffic_ai.db.database as db
 
     async def _run() -> dict:
-        await init_db()
-        assert async_session_factory is not None
-        async with async_session_factory() as session:
+        await db.init_db()
+        assert db.async_session_factory is not None
+        async with db.async_session_factory() as session:
             ingestor = DGTIncidentsIngestor(db=session)
             await ingestor.start()
             results = await ingestor.poll()
@@ -106,23 +94,46 @@ def poll_dgt_incidents(self) -> dict:
 
 
 # ── DGT camera polling ───────────────────────────────────────────────────────
+# Singleton ingestor — persists round-robin cursor across task invocations
+_dgt_camera_ingestor = None
 
-@app.task(name="traffic_ai.tasks.sensor_tasks.poll_dgt_cameras", bind=True, max_retries=2)
+@app.task(name="traffic_ai.tasks.sensor_tasks.poll_dgt_cameras", bind=True, max_retries=0)
 def poll_dgt_cameras(self) -> dict:
-    """Fetch DGT national camera snapshots and run vehicle detection."""
+    """Fetch one batch of DGT camera snapshots and run vehicle detection.
+
+    Uses a Redis lock to prevent overlapping runs. Beat fires every 30s;
+    if the previous batch is still running the task skips immediately.
+    This gives continuous back-to-back processing with no idle gaps.
+    Camera list is sorted once: major highways first, then round-robin.
+    """
+    import redis as _redis
+    global _dgt_camera_ingestor
+
+    LOCK_KEY = "dgt_cameras:running"
+    LOCK_TTL = 300  # 5-min safety TTL in case of crash
+
+    r = _redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+    acquired = r.set(LOCK_KEY, "1", nx=True, ex=LOCK_TTL)
+    if not acquired:
+        logger.debug("DGT cameras: previous batch still running, skipping")
+        return {"processed": 0, "source": "dgt_cameras", "skipped": True}
+
     from traffic_ai.ingestors.dgt_cameras import DGTCameraIngestor
-    ingestor = DGTCameraIngestor()
+    if _dgt_camera_ingestor is None:
+        _dgt_camera_ingestor = DGTCameraIngestor()
+
     loop = asyncio.new_event_loop()
     try:
-        loop.run_until_complete(ingestor.start())
-        results = loop.run_until_complete(ingestor.poll())
+        loop.run_until_complete(_dgt_camera_ingestor.start())
+        results = loop.run_until_complete(_dgt_camera_ingestor.poll())
         logger.info("DGT cameras: processed %d snapshots", len(results))
         return {"processed": len(results), "source": "dgt_cameras"}
     except Exception as exc:
         logger.exception("DGT camera ingestor failed")
-        raise self.retry(exc=exc, countdown=120)
+        return {"processed": 0, "source": "dgt_cameras", "error": str(exc)}
     finally:
         loop.close()
+        r.delete(LOCK_KEY)
 
 
 # ── Madrid city cameras ──────────────────────────────────────────────────────
