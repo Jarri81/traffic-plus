@@ -233,27 +233,3 @@ def poll_tomtom_flow(self) -> dict:
     finally:
         loop.close()
 
-
-# ── Baseline recalculation ───────────────────────────────────────────────────
-
-@app.task(name="traffic_ai.tasks.sensor_tasks.recalculate_baselines")
-def recalculate_baselines() -> dict:
-    """Recalculate speed baselines for all segments from InfluxDB history."""
-    logger.info("Recalculating speed baselines")
-    loop = asyncio.new_event_loop()
-    try:
-        async def _run():
-            from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-            from traffic_ai.analytics.baseline import BaselineCalculator
-            engine = create_async_engine(settings.database_url)
-            session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-            async with session_factory() as session:
-                calculator = BaselineCalculator(db=session)
-                count = await calculator.recalculate_all()
-                await session.commit()
-            await engine.dispose()
-            return count
-        count = loop.run_until_complete(_run())
-    finally:
-        loop.close()
-    return {"segments_updated": count}
