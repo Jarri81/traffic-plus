@@ -83,11 +83,13 @@ app.conf.beat_schedule = {
         "task": "traffic_ai.tasks.weather_tasks.poll_all_weather",
         "schedule": float(_profile.weather_poll_interval_s),
     },
-    # ── Risk scoring (uses all the above data)
-    "compute-risk-scores": {
-        "task": "traffic_ai.tasks.risk_tasks.compute_all_risk_scores",
-        "schedule": float(_profile.risk_compute_interval_s),
-    },
+    # ── Risk scoring — disabled until loop detector data populates RoadSegment table.
+    # compute_all_risk_scores queries ALL segments (potentially 2.7M) and dispatches
+    # one task per segment — OOMs the worker with no data to score.
+    # "compute-risk-scores": {
+    #     "task": "traffic_ai.tasks.risk_tasks.compute_all_risk_scores",
+    #     "schedule": float(_profile.risk_compute_interval_s),
+    # },
     # ── Baseline recalculation — disabled until loop detector data exists
     # Iterates 2.7M segments × InfluxDB queries — prohibitively slow with no data.
     # Re-enable once loop_detector measurements appear in InfluxDB.
