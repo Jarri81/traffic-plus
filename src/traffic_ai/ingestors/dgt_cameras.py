@@ -55,8 +55,8 @@ _DEFAULT_STRATEGY: dict[str, Any] = {
     "mode": "all",         # "all" | "roads" | "bbox"
     "roads": [],           # list of road names for "roads" mode
     "bbox": {},            # {lat_min, lat_max, lon_min, lon_max} for "bbox" mode
-    "batch_size": 400,
-    "semaphore": 30,
+    "batch_size": 200,     # reduced from 400 — keeps peak worker RAM under 500MB
+    "semaphore": 15,       # reduced from 30 — limits concurrent ONNX inferences
 }
 
 
