@@ -12,23 +12,25 @@ logger = logging.getLogger(__name__)
 def compute_risk_score(self, segment_id: str, pilot: str = "default") -> dict:
     """Compute the risk score for a single segment and evaluate alert thresholds."""
     from traffic_ai.analytics.alert_engine import evaluate_and_alert
-    from traffic_ai.db.database import init_db, async_session_factory
 
     async def _run() -> dict:
-        await init_db()
-        assert async_session_factory is not None
-        async with async_session_factory() as session:
-            from traffic_ai.analytics.risk_scorer_ml import MLRiskScoringEngine  # noqa: PLC0415
-            engine = MLRiskScoringEngine(db=session)
-            result = await engine.compute_with_explanation(segment_id)
-            score = result["score"]
-            actions = await evaluate_and_alert(session, segment_id, score, pilot=pilot)
-            await session.commit()
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from traffic_ai.config import settings as _settings
+        engine = create_async_engine(_settings.database_url, pool_size=2, max_overflow=0)
+        try:
+            factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            async with factory() as session:
+                from traffic_ai.analytics.risk_scorer_ml import MLRiskScoringEngine  # noqa: PLC0415
+                ml_engine = MLRiskScoringEngine(db=session)
+                result = await ml_engine.compute_with_explanation(segment_id)
+                score = result["score"]
+                actions = await evaluate_and_alert(session, segment_id, score, pilot=pilot)
+                await session.commit()
+        finally:
+            await engine.dispose()
 
-        # Persist score to InfluxDB for trend charts
         await _write_risk_score(segment_id, score, result.get("level", "low"))
 
-        # Fire webhook for critical risk segments
         if result.get("level") == "critical":
             from traffic_ai.utils.webhook import fire_webhook  # noqa: PLC0415
             await fire_webhook("risk.critical", {
@@ -53,9 +55,10 @@ def compute_risk_score(self, segment_id: str, pilot: str = "default") -> dict:
 @app.task(name="traffic_ai.tasks.risk_tasks.compute_all_risk_scores")
 def compute_all_risk_scores() -> dict:
     """Compute risk scores for all segments, respecting resource throttling."""
-    from traffic_ai.db.database import init_db, async_session_factory
     from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
     from traffic_ai.models.orm import RoadSegment
+    from traffic_ai.config import settings
 
     resource_mgr = RuntimeResourceManager()
     if resource_mgr.should_throttle():
@@ -63,24 +66,27 @@ def compute_all_risk_scores() -> dict:
     concurrency = resource_mgr.available_concurrency()
 
     async def _get_segments() -> list[tuple[str, str]]:
-        await init_db()
-        assert async_session_factory is not None
-        async with async_session_factory() as session:
-            result = await session.execute(select(RoadSegment.id, RoadSegment.pilot))
-            return [(row[0], row[1]) for row in result.all()]
+        engine = create_async_engine(settings.database_url, pool_size=2, max_overflow=0)
+        try:
+            factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            async with factory() as session:
+                result = await session.execute(select(RoadSegment.id, RoadSegment.pilot))
+                return [(row[0], row[1]) for row in result.all()]
+        finally:
+            await engine.dispose()
 
     loop = asyncio.new_event_loop()
     try:
         segments = loop.run_until_complete(_get_segments())
+    except Exception:
+        logger.exception("Failed to fetch segments for risk computation")
+        return {"dispatched": 0, "concurrency": concurrency}
     finally:
         loop.close()
 
     dispatched = 0
     for segment_id, pilot in segments:
-        compute_risk_score.apply_async(
-            args=[segment_id, pilot],
-            queue="default",
-        )
+        compute_risk_score.apply_async(args=[segment_id, pilot], queue="default")
         dispatched += 1
 
     logger.info("Dispatched risk computation for %d segments (concurrency=%d)", dispatched, concurrency)
