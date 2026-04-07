@@ -131,7 +131,7 @@ services:
     networks:
       - traffic-ai-net
     restart: unless-stopped
-    mem_limit: 64m
+    mem_limit: 96m
 
   flower:
     image: mher/flower:2.0
@@ -146,7 +146,7 @@ services:
     networks:
       - traffic-ai-net
     restart: unless-stopped
-    mem_limit: 64m
+    mem_limit: 96m
 
 networks:
   traffic-ai-net:
