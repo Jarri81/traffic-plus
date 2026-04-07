@@ -18,12 +18,15 @@ dependencies = [
     "psutil",
     "python-jose[cryptography]",
     "passlib[bcrypt]",
+    "bcrypt<4",
     "pydantic>=2.5",
     "pydantic-settings",
     "geoalchemy2>=0.14",
     "shapely>=2.0",
     "numpy",
     "pandas",
+    "pyarrow",
+    "Pillow",
     "onnxruntime",
     "psycopg2-binary",
     "slowapi",
@@ -38,9 +41,6 @@ dev = [
     "ruff",
 ]
 ml = [
-    # Inference (runtime)
-    "onnxruntime",         # ONNX RT — MIT
-    "Pillow",              # JPEG decode for vehicle detector
     # Training scripts only (not needed at runtime)
     "torch",               # LSTM training
     "onnx",                # ONNX export

@@ -7,7 +7,7 @@ from slowapi.errors import RateLimitExceeded
 from traffic_ai.config import settings
 from traffic_ai.db.database import init_db, close_db
 from traffic_ai.api.limiter import limiter
-from traffic_ai.api.routes import health, segments, risk, predictions, assets, tickets, incidents, auth as auth_routes, cameras, metrics, users, app_settings, map_data
+from traffic_ai.api.routes import health, segments, risk, predictions, assets, tickets, incidents, auth as auth_routes, cameras, metrics, users, app_settings, map_data, alerts, export
 
 
 @asynccontextmanager
@@ -50,3 +50,5 @@ app.include_router(metrics.router, prefix="/api/v1", tags=["Metrics"])
 app.include_router(users.router, prefix="/api/v1", tags=["Users"])
 app.include_router(app_settings.router, prefix="/api/v1", tags=["Settings"])
 app.include_router(map_data.router, prefix="/api/v1", tags=["Map"])
+app.include_router(alerts.router, prefix="/api/v1", tags=["Alerts"])
+app.include_router(export.router, prefix="/api/v1", tags=["Export"])
