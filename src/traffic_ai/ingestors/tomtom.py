@@ -48,14 +48,28 @@ _CITY_CENTRES: dict[str, tuple[float, float]] = {
 }
 
 # Key highway coordinates: (name, lat, lon)
-# These cover the major arterials in Madrid, Barcelona, Valencia
+# 16 points across Madrid (8), Barcelona (4), Valencia (4)
+# Budget: 16 × 144 polls/day = 2,304 calls/day (under 2,500 free-tier limit)
 DEFAULT_FLOW_POINTS: list[tuple[str, float, float]] = [
-    ("madrid_m30",    40.4168, -3.7038),
-    ("madrid_a6",     40.5236, -3.8236),
-    ("madrid_a1",     40.6266, -3.7234),
-    ("madrid_a2",     40.4500, -3.5500),
-    ("barcelona_ap7", 41.3851,  2.1734),
-    ("valencia_a3",   39.4699, -0.3763),
+    # Madrid — radial highways + M-30 + M-40
+    ("madrid_m30",    40.4168, -3.7038),   # M-30 central ring
+    ("madrid_m40_s",  40.3700, -3.7300),   # M-40 south arc
+    ("madrid_m40_e",  40.4500, -3.5800),   # M-40 east arc
+    ("madrid_a1",     40.6266, -3.7234),   # A-1 north (Burgos)
+    ("madrid_a2",     40.4500, -3.5500),   # A-2 east (Barcelona)
+    ("madrid_a3",     40.3800, -3.6200),   # A-3 southeast (Valencia)
+    ("madrid_a4",     40.3200, -3.7100),   # A-4 south (Córdoba)
+    ("madrid_a6",     40.5236, -3.8236),   # A-6 northwest (La Coruña)
+    # Barcelona — AP-7 + inner ring + coastal
+    ("barcelona_ap7", 41.3851,  2.1734),   # AP-7 / Ronda Litoral
+    ("barcelona_b10", 41.3600,  2.1600),   # B-10 port access
+    ("barcelona_c31", 41.4000,  2.2100),   # C-31 Diagonal Mar / coastal
+    ("barcelona_c58", 41.4500,  2.1000),   # C-58 Sabadell / north exit
+    # Valencia — A-3 + ring roads
+    ("valencia_a3",   39.4699, -0.3763),   # A-3 west (Madrid)
+    ("valencia_v21",  39.5100, -0.3600),   # V-21 north port access
+    ("valencia_v30",  39.4600, -0.4400),   # V-30 west ring
+    ("valencia_cv35", 39.5200, -0.4100),   # CV-35 northwest (Llíria)
 ]
 
 _INCIDENT_TYPE_NAMES: dict[int, str] = {

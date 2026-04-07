@@ -30,13 +30,13 @@ app.conf.beat_schedule = {
     # ── Barcelona Open Data BCN — traffic state, updated every 5 min
     "poll-barcelona": {
         "task": "traffic_ai.tasks.sensor_tasks.poll_barcelona",
-        "schedule": 180.0,  # 3 min — fast call, extra resolution
+        "schedule": 300.0,  # match source refresh rate — no point polling faster
         "options": {"priority": 7},
     },
-    # ── DGT national incidents (accidents, roadworks, closures)
+    # ── DGT national incidents — incidents change slowly; 10 min is sufficient
     "poll-dgt-incidents": {
         "task": "traffic_ai.tasks.sensor_tasks.poll_dgt_incidents",
-        "schedule": 180.0,  # 3 min — catch incident changes faster
+        "schedule": 600.0,
         "options": {"priority": 6},
     },
     # ── DGT national cameras — Redis-locked, back-to-back batches of 200
@@ -56,24 +56,19 @@ app.conf.beat_schedule = {
     # ── Madrid Informo per-tramo traffic state — updated every 5 min
     "poll-madrid-traffic-state": {
         "task": "traffic_ai.tasks.sensor_tasks.poll_madrid_traffic_state",
-        "schedule": 180.0,  # 3 min — fast call, extra resolution
-        "options": {"priority": 7},  # high priority — official state data
+        "schedule": 300.0,  # match source refresh rate
+        "options": {"priority": 7},
     },
     # ── Valencia city real-time traffic state — updated every 3 min
     "poll-valencia-traffic": {
         "task": "traffic_ai.tasks.sensor_tasks.poll_valencia_traffic",
-        "schedule": 120.0,  # 2 min — API refreshes every 3 min, harmless to poll faster
+        "schedule": 180.0,  # match source refresh rate
         "options": {"priority": 7},
     },
-    # ── TomTom national incidents — 3 bboxes/poll, every 3 min (1,440 calls/day)
-    # Flow kept at 10 min (864/day) → total 2,304/day, under 2,500 free-tier limit.
-    "poll-tomtom-incidents": {
-        "task": "traffic_ai.tasks.sensor_tasks.poll_tomtom_incidents",
-        "schedule": 180.0,  # 3 min — 1,440 calls/day (was 864)
-        "options": {"priority": 6},
-    },
-    # ── TomTom flow — 6 key highway points, every 10 min (864 calls/day)
-    # Keep at 10 min — increasing to 5 min would push total over 2,500/day limit.
+    # ── TomTom incidents removed — redundant with DGT incidents.
+    # Freed 1,440 calls/day reallocated to 10 extra flow points.
+    #
+    # ── TomTom flow — 16 highway points, every 10 min (2,304 calls/day < 2,500 limit)
     "poll-tomtom-flow": {
         "task": "traffic_ai.tasks.sensor_tasks.poll_tomtom_flow",
         "schedule": 600.0,
