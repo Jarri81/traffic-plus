@@ -245,15 +245,8 @@ def _parse_incidents(data: dict[str, Any], city: str = "") -> list[dict[str, Any
     incidents = data.get("incidents") or data.get("features", [])
     for inc in incidents:
         try:
-            props = inc.get("properties") or inc
-            # v5: id is at Feature top level; v4 fallback: id is in properties
-            inc_id = str(inc.get("id") or props.get("id") or "").strip()
-            if not inc_id:
-                continue
-
-            # v5 API uses iconCategory (int) instead of type
+            props = inc.get("properties") or {}
             inc_type = int(props.get("iconCategory") or props.get("type") or 0)
-            # v5 API uses magnitudeOfDelay instead of magnitude
             magnitude = int(props.get("magnitudeOfDelay") or props.get("magnitude") or 0)
             delay = float(props.get("delay") or 0)
             length = float(props.get("length") or 0)
@@ -265,10 +258,14 @@ def _parse_incidents(data: dict[str, Any], city: str = "") -> list[dict[str, Any
             geom = inc.get("geometry", {})
             coords = geom.get("coordinates")
             if coords:
-                # LineString → first point; Point → coords directly
                 first = coords[0] if isinstance(coords[0], list) else coords
                 if len(first) >= 2:
                     lon, lat = float(first[0]), float(first[1])
+
+            # id may be absent in v5 minimal responses — synthesise from position+type
+            inc_id = str(inc.get("id") or props.get("id") or f"{city}_{lon:.5f}_{lat:.5f}_{inc_type}").strip()
+            if not inc_id:
+                continue
 
             records.append({
                 "id": inc_id,
