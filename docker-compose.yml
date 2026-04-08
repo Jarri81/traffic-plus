@@ -112,7 +112,7 @@ services:
     networks:
       - traffic-ai-net
     restart: unless-stopped
-    mem_limit: 256m
+    mem_limit: 384m
 
   celery_camera_worker:
     build:
