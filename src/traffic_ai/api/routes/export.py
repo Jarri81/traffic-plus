@@ -35,21 +35,37 @@ _SOURCES: dict[str, dict] = {
         "measurement": "madrid_traffic",
         "tag": "tramo_id",
         "fields": ["speed_kmh", "load_pct", "occupancy_pct", "density_score", "estado"],
+        "agg_window": "1h",   # 5-min source → 1h is fine for ML training
     },
     "barcelona_traffic": {
         "measurement": "barcelona_traffic",
         "tag": "tram_id",
         "fields": ["density_score", "density_score_forecast", "speed_kmh", "estat", "estat_forecast"],
+        "agg_window": "1h",
     },
     "valencia_traffic": {
         "measurement": "valencia_traffic",
         "tag": "seg_id",
         "fields": ["density_score", "estado"],
+        "agg_window": "1h",
     },
     "tomtom_flow": {
         "measurement": "tomtom_flow",
         "tag": "point_id",
         "fields": ["current_speed", "free_flow_speed", "density_score", "confidence"],
+        "agg_window": "1h",
+    },
+    "dgt_cameras": {
+        "measurement": "dgt_cameras",
+        "tag": "camera_id",
+        "fields": ["vehicle_count", "density_score"],
+        "agg_window": "15m",  # congestion events last 15-30 min — hourly loses them
+    },
+    "madrid_cameras": {
+        "measurement": "madrid_cameras",
+        "tag": "camera_id",
+        "fields": ["vehicle_count", "density_score"],
+        "agg_window": "15m",
     },
 }
 
@@ -132,13 +148,14 @@ async def export_parquet(
             tag = cfg["tag"]
             fields = cfg["fields"]
 
+            agg_window = cfg.get("agg_window", "1h")
             fields_filter = " or ".join(f'r._field == "{f}"' for f in fields)
             query = f"""
 from(bucket: "traffic_metrics")
   |> range(start: {from_str}, stop: {to_str})
   |> filter(fn: (r) => r._measurement == "{measurement}")
   |> filter(fn: (r) => {fields_filter})
-  |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+  |> aggregateWindow(every: {agg_window}, fn: mean, createEmpty: false)
   |> pivot(rowKey: ["_time", "{tag}"], columnKey: ["_field"], valueColumn: "_value")
   |> sort(columns: ["_time"])
 """
