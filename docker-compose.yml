@@ -95,7 +95,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: celery -A traffic_ai.celery_app worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-1}
+    # Handles state/incident/flow tasks only — no ONNX, stays light (~150MB)
+    command: celery -A traffic_ai.celery_app worker --loglevel=info --concurrency=1 --queues=default
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://traffic:${POSTGRES_PASSWORD:-traffic}@postgres:5432/traffic_ai
@@ -111,7 +112,30 @@ services:
     networks:
       - traffic-ai-net
     restart: unless-stopped
-    mem_limit: 768m
+    mem_limit: 256m
+
+  celery_camera_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Dedicated camera worker — ONNX inference, isolated from state tasks
+    command: celery -A traffic_ai.celery_app worker --loglevel=info --concurrency=1 --queues=cameras --hostname=camera@%h
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://traffic:${POSTGRES_PASSWORD:-traffic}@postgres:5432/traffic_ai
+      REDIS_URL: redis://redis:6379/0
+      INFLUX_URL: http://influxdb:8086
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    networks:
+      - traffic-ai-net
+    restart: unless-stopped
+    mem_limit: 512m
 
   celery_beat:
     build:

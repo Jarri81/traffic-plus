@@ -17,13 +17,17 @@ app.conf.update(
     task_serializer="json", accept_content=["json"], result_serializer="json",
     timezone="UTC", enable_utc=True, task_track_started=True, task_acks_late=True,
     worker_prefetch_multiplier=1, worker_concurrency=settings.celery_concurrency,
-    worker_max_tasks_per_child=50,  # restart worker process after 50 tasks to release leaked memory
+    worker_max_tasks_per_child=50,
     task_default_queue="default",
     task_reject_on_worker_lost=True,
-    # Limit queue depth — cameras fire every 30s; cap backlog at 8 camera tasks
-    # so state/incident tasks are not buried under hundreds of queued camera jobs.
     task_queue_max_priority=10,
     task_default_priority=5,
+    # Camera tasks go to a dedicated queue consumed by celery_camera_worker.
+    # This prevents 50s ONNX+HTTP batches from starving state/incident tasks.
+    task_routes={
+        "traffic_ai.tasks.sensor_tasks.poll_dgt_cameras":    {"queue": "cameras"},
+        "traffic_ai.tasks.sensor_tasks.poll_madrid_cameras": {"queue": "cameras"},
+    },
 )
 _profile = get_profile()
 app.conf.beat_schedule = {
