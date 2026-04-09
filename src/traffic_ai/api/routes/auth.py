@@ -47,6 +47,11 @@ async def refresh_token(
     payload = verify_token(token)
     if payload is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    user_id = payload.get("sub")
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
     new_token = create_access_token(data={"sub": payload["sub"], "role": payload.get("role", "viewer")})
     return TokenResponse(access_token=new_token, expires_in=settings.access_token_expire_minutes * 60)
 

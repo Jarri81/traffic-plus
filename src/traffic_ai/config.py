@@ -1,9 +1,13 @@
 """Application configuration with hardware-adaptive profiles."""
 from __future__ import annotations
+import logging
 import psutil
 from dataclasses import dataclass, field
 from typing import Literal
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+_config_logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -42,6 +46,14 @@ class Settings(BaseSettings):
     # runtime via PATCH /api/v1/settings (stored in Redis).
     webhook_url: str = ""
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def _check_secret_key(self) -> "Settings":
+        if self.secret_key == "change-me":
+            if self.environment == "production":
+                raise ValueError("secret_key must be changed from the default in production")
+            _config_logger.warning("secret_key is set to the insecure default 'change-me'")
+        return self
 
     @property
     def loop_detector_url_list(self) -> list[str]:
@@ -101,7 +113,7 @@ PROFILES: dict[str, ProfileConfig] = {
         throttle_cpu_pct=85.0, throttle_mem_pct=85.0,
     ),
     "balanced": ProfileConfig(
-        name="balanced", max_cameras=4, max_loop_detectors=25, celery_concurrency=8,
+        name="balanced", max_cameras=20, max_loop_detectors=25, celery_concurrency=8,
         enable_gpu=False, enable_onnx=True, influx_retention_days=30,
         risk_compute_interval_s=120, baseline_recalc_interval_s=7200,
         weather_poll_interval_s=900, max_frame_batch_size=4,

@@ -53,7 +53,7 @@ class NOAAWeatherIngestor(BaseIngestor):
                         if visibility is not None: fields.append(f"visibility_m={visibility}")
                         if fields:
                             line = f"weather,station_id={station_id},source=noaa {','.join(fields)}"
-                            await write_points(line)
+                            await write_points([line])
                 except Exception:
                     self.logger.exception("Error polling NOAA station %s", station_id)
         return results
@@ -114,7 +114,7 @@ class AEMETWeatherIngestor(BaseIngestor):
                         if visibility is not None: fields.append(f"visibility_m={visibility}")
                         if fields:
                             line = f"weather,station_id={station_id},source=aemet {','.join(fields)}"
-                            await write_points(line)
+                            await write_points([line])
                 except Exception:
                     self.logger.exception("Error polling AEMET station %s", station_id)
         return results

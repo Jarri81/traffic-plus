@@ -47,13 +47,16 @@ async def create_incident(
     if body.severity and body.severity >= 4:
         from traffic_ai.utils.webhook import fire_webhook  # noqa: PLC0415
         import asyncio  # noqa: PLC0415
-        asyncio.create_task(fire_webhook("incident.high_severity", {
-            "incident_id": out.id,
-            "incident_type": body.incident_type,
-            "severity": body.severity,
-            "segment_id": body.segment_id,
-            "description": body.description,
-        }))
+        try:
+            await asyncio.shield(asyncio.ensure_future(fire_webhook("incident.high_severity", {
+                "incident_id": out.id,
+                "incident_type": body.incident_type,
+                "severity": body.severity,
+                "segment_id": body.segment_id,
+                "description": body.description,
+            })))
+        except Exception:
+            pass
 
     return out
 
@@ -95,7 +98,7 @@ async def get_incident(
 async def resolve_incident(
     incident_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_operator),
 ) -> IncidentOut:
     """Mark an incident as resolved."""
     from datetime import datetime, timezone

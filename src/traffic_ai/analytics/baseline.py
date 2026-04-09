@@ -11,7 +11,9 @@ Two baseline modes
    LSTM training pipeline and for anomaly scoring.
 """
 from __future__ import annotations
+import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,6 +21,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from traffic_ai.db.influx import query_points
+
+_SAFE_ID = re.compile(r'^[a-zA-Z0-9_\-]+$')
 
 logger = logging.getLogger(__name__)
 
@@ -44,18 +48,26 @@ class BaselineCalculator:
         result = await self.db.execute(select(RoadSegment.id))
         segment_ids = [row[0] for row in result.all()]
 
-        count = 0
-        for segment_id in segment_ids:
-            try:
-                baselines = await self.recalculate_segment(segment_id)
-                count += len(baselines)
-            except Exception:
-                logger.exception("Failed to recalculate baselines for segment %s", segment_id)
+        sem = asyncio.Semaphore(10)
+
+        async def _one(segment_id: str) -> int:
+            async with sem:
+                try:
+                    baselines = await self.recalculate_segment(segment_id)
+                    return len(baselines)
+                except Exception:
+                    logger.exception("Failed to recalculate baselines for segment %s", segment_id)
+                    return 0
+
+        results = await asyncio.gather(*[_one(sid) for sid in segment_ids])
+        count = sum(r for r in results if isinstance(r, int))
         logger.info("Recalculated %d total baseline buckets across %d segments", count, len(segment_ids))
         return count
 
     async def recalculate_segment(self, segment_id: str, tz_name: str = "UTC") -> list[dict[str, Any]]:
         """Recalculate baselines for a single segment and upsert to PostgreSQL."""
+        if not _SAFE_ID.match(segment_id):
+            raise ValueError(f"Invalid segment_id for Flux query: {segment_id!r}")
         import zoneinfo
         local_tz = zoneinfo.ZoneInfo(tz_name)
         query = f"""
@@ -166,6 +178,8 @@ class BaselineCalculator:
         lookback_hours:
             History window.  Defaults to self.lookback_hours (168h = 1 week).
         """
+        if not _SAFE_ID.match(segment_id):
+            raise ValueError(f"Invalid segment_id for Flux query: {segment_id!r}")
         lookback = lookback_hours or self.lookback_hours
         query = f"""
         from(bucket: "traffic_metrics")

@@ -102,7 +102,11 @@ async def _get_flow_geojson() -> dict[str, Any]:
 
 
 async def _get_incidents_geojson(db: AsyncSession) -> dict[str, Any]:
-    """Return active Postgres incidents that have a location geometry."""
+    """Return active incidents: PostgreSQL (with geometry) + InfluxDB TomTom incidents."""
+    features: list[dict] = []
+    seen_ids: set[str] = set()
+
+    # 1. PostgreSQL incidents with geometry
     try:
         from geoalchemy2.functions import ST_X, ST_Y
         result = await db.execute(
@@ -121,26 +125,76 @@ async def _get_incidents_geojson(db: AsyncSession) -> dict[str, Any]:
             .order_by(Incident.started_at.desc())
             .limit(200)
         )
-        rows = result.all()
+        for row in result.all():
+            if row.lat is None or row.lon is None:
+                continue
+            seen_ids.add(str(row.id))
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(row.lon), float(row.lat)]},
+                "properties": {
+                    "id": str(row.id),
+                    "incident_type": row.incident_type,
+                    "severity": row.severity or 0,
+                    "description": row.description or "",
+                    "source": row.source or "",
+                    "started_at": row.started_at.isoformat() if row.started_at else None,
+                },
+            })
     except Exception:
-        logger.exception("Failed to query incidents for map")
-        rows = []
+        logger.exception("Failed to query PostgreSQL incidents for map")
 
-    features: list[dict] = []
-    for row in rows:
-        if row.lat is None or row.lon is None:
-            continue
-        features.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [float(row.lon), float(row.lat)]},
-            "properties": {
-                "id": row.id,
-                "incident_type": row.incident_type,
-                "severity": row.severity or 0,
-                "description": row.description or "",
-                "source": row.source or "",
-                "started_at": row.started_at.isoformat() if row.started_at else None,
-            },
-        })
+    # 2. TomTom incidents from InfluxDB (last 30 min, deduplicated by tag id)
+    try:
+        flux = """
+        from(bucket: "traffic_metrics")
+          |> range(start: -30m)
+          |> filter(fn: (r) => r._measurement == "tomtom_incidents")
+          |> last()
+        """
+        rows = await query_points(flux)
+        # Group rows by incident id tag → collect field values
+        by_id: dict[str, dict] = {}
+        for row in rows:
+            inc_id = row.get("id", "")
+            if not inc_id:
+                continue
+            if inc_id not in by_id:
+                by_id[inc_id] = {
+                    "type": row.get("type", "unknown"),
+                    "magnitude": row.get("magnitude", "unknown"),
+                    "road": row.get("road", ""),
+                    "city": row.get("city", ""),
+                }
+            field = row.get("_field", "")
+            val = row.get("_value")
+            if field and val is not None:
+                by_id[inc_id][field] = val
+
+        for inc_id, vals in by_id.items():
+            if inc_id in seen_ids:
+                continue
+            lat = vals.get("lat")
+            lon = vals.get("lon")
+            if lat is None or lon is None:
+                continue
+            seen_ids.add(inc_id)
+            magnitude_i = int(vals.get("magnitude_i") or 0)
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                "properties": {
+                    "id": inc_id,
+                    "incident_type": vals.get("type", "unknown"),
+                    "severity": magnitude_i,
+                    "description": f"{vals.get('type', '').replace('_', ' ').capitalize()} on {vals.get('road') or vals.get('city', '')}",
+                    "source": "tomtom",
+                    "city": vals.get("city", ""),
+                    "delay_s": vals.get("delay_s", 0),
+                    "length_m": vals.get("length_m", 0),
+                },
+            })
+    except Exception:
+        logger.exception("Failed to query TomTom incidents from InfluxDB for map")
 
     return {"type": "FeatureCollection", "features": features}

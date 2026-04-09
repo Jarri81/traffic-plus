@@ -1,14 +1,32 @@
 """Risk scoring engine -- 7-factor model for road segment risk assessment."""
 from __future__ import annotations
 import logging
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+_SAFE_ID = re.compile(r'^[a-zA-Z0-9_\-]+$')
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+# Map segment ID prefix → (influx measurement, speed field, tomtom point_id prefix)
+_SEGMENT_CITY: dict[str, tuple[str, str, str]] = {
+    "vlc-": ("valencia_traffic",  "speed_kmh",     "valencia_"),
+    "bcn-": ("barcelona_traffic", "speed_kmh",     "barcelona_"),
+}
+_MADRID_DEFAULT = ("madrid_traffic", "speed_kmh", "madrid_")
+
+
+def _city_info(segment_id: str) -> tuple[str, str, str]:
+    """Return (measurement, speed_field, tomtom_prefix) for a segment ID."""
+    for prefix, info in _SEGMENT_CITY.items():
+        if segment_id.startswith(prefix):
+            return info
+    return _MADRID_DEFAULT
 
 DEFAULT_WEIGHTS: dict[str, float] = {
     "speed_deviation": 0.22,
@@ -109,68 +127,75 @@ class RiskScoringEngine:
         return factors
 
     async def _calc_speed_deviation(self, segment_id: str) -> float:
-        """Query recent speed readings from InfluxDB and compare to baseline.
+        """Compare current city speed to free-flow baseline.
 
-        Returns a score 0-100 based on how far current avg speed deviates
-        from the baseline for this segment/hour/day combination.
+        Uses city-specific TomTom flow points so Madrid, Valencia, and Barcelona
+        segments each get their own corridor speed rather than a global average.
+        Returns 0-100: 0 = at free flow, 100 = standstill.
         """
+        if not _SAFE_ID.match(segment_id):
+            raise ValueError(f"Invalid segment_id for Flux query: {segment_id!r}")
         try:
             from traffic_ai.db.influx import query_points
-            now = datetime.now(timezone.utc)
+            _, _, tomtom_prefix = _city_info(segment_id)
             query = f"""
             from(bucket: "traffic_metrics")
               |> range(start: -15m)
-              |> filter(fn: (r) => r._measurement == "loop_detector")
-              |> filter(fn: (r) => r.segment_id == "{segment_id}")
-              |> filter(fn: (r) => r._field == "speed_kmh")
+              |> filter(fn: (r) => r._measurement == "tomtom_flow")
+              |> filter(fn: (r) => r._field == "current_speed" or r._field == "free_flow_speed")
+              |> filter(fn: (r) => r.point_id =~ /^{tomtom_prefix}/)
               |> mean()
             """
             points = await query_points(query)
             if not points:
                 return 0.0
-            current_avg = float(points[0].get("_value", 0))
 
-            # Fetch baseline from PostgreSQL
-            if self.db is not None:
-                from traffic_ai.models.orm import SpeedBaseline
-                result = await self.db.execute(
-                    select(SpeedBaseline).where(
-                        SpeedBaseline.segment_id == segment_id,
-                        SpeedBaseline.hour_of_day == now.hour,
-                        SpeedBaseline.day_of_week == now.weekday(),
-                    )
-                )
-                baseline = result.scalar_one_or_none()
-                if baseline and baseline.avg_speed_kmh > 0:
-                    deviation = abs(current_avg - baseline.avg_speed_kmh) / baseline.avg_speed_kmh
-                    return min(deviation * 100, 100.0)
+            values: dict[str, float] = {}
+            for p in points:
+                field = p.get("_field", "")
+                val = p.get("_value")
+                if field and val is not None:
+                    values[field] = float(val)
+
+            current = values.get("current_speed", 0.0)
+            free_flow = values.get("free_flow_speed", 0.0)
+            if free_flow > 0:
+                return min(max((1.0 - current / free_flow) * 100, 0.0), 100.0)
             return 0.0
         except Exception:
             logger.exception("Error in _calc_speed_deviation for %s", segment_id)
             return 0.0
 
     async def _calc_incident_proximity(self, segment_id: str) -> float:
-        """Count recent incidents near the segment from PostgreSQL.
+        """Count active incidents within 15 km of the segment centroid.
 
-        Returns a score 0-100 based on incident count and severity.
+        Uses PostGIS ST_DWithin (geography, metres) so the radius is consistent
+        regardless of latitude.  Returns 0-100 based on count × avg severity.
         """
         if self.db is None:
             return 0.0
         try:
-            from traffic_ai.models.orm import Incident
-            cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            result = await self.db.execute(
-                select(func.count(Incident.id), func.coalesce(func.avg(Incident.severity), 1)).where(
-                    Incident.segment_id == segment_id,
-                    Incident.status == "active",
-                    Incident.started_at >= cutoff,
-                )
-            )
-            row = result.one_or_none()
+            from sqlalchemy import text
+            cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+            row = (await self.db.execute(
+                text("""
+                    SELECT COUNT(i.id), COALESCE(AVG(i.severity), 1)
+                    FROM incidents i
+                    JOIN road_segments s ON s.id = :seg_id
+                    WHERE i.status = 'active'
+                      AND i.location_geom IS NOT NULL
+                      AND i.started_at >= :cutoff
+                      AND ST_DWithin(
+                          i.location_geom::geography,
+                          ST_Centroid(s.geom)::geography,
+                          15000
+                      )
+                """),
+                {"seg_id": segment_id, "cutoff": cutoff},
+            )).one_or_none()
             if row is None:
                 return 0.0
             count, avg_severity = row[0], row[1]
-            # Scale: 0 incidents = 0, 5+ incidents = 100, weighted by severity
             base = min(count / 5.0, 1.0) * 100
             severity_factor = min(float(avg_severity) / 5.0, 1.0) if avg_severity else 0.5
             return min(base * severity_factor, 100.0)
@@ -179,26 +204,33 @@ class RiskScoringEngine:
             return 0.0
 
     async def _calc_flow_density(self, segment_id: str) -> float:
-        """Use flow/density ratio from sensor data to assess congestion.
+        """Mean density_score for the segment's city over the last 15 minutes.
 
-        Returns a score 0-100 where higher means more congested.
+        Routes to the city-specific InfluxDB measurement so Madrid, Valencia, and
+        Barcelona segments reflect their own sensor network rather than a global mean.
+        Returns 0-100 where higher means more congested.
         """
+        if not _SAFE_ID.match(segment_id):
+            raise ValueError(f"Invalid segment_id for Flux query: {segment_id!r}")
         try:
             from traffic_ai.db.influx import query_points
+            measurement, _, _ = _city_info(segment_id)
+            if not _SAFE_ID.match(measurement):
+                raise ValueError(f"Invalid measurement for Flux query: {measurement!r}")
             query = f"""
             from(bucket: "traffic_metrics")
               |> range(start: -15m)
-              |> filter(fn: (r) => r._measurement == "loop_detector")
-              |> filter(fn: (r) => r.segment_id == "{segment_id}")
-              |> filter(fn: (r) => r._field == "occupancy_pct")
+              |> filter(fn: (r) => r._measurement == "{measurement}")
+              |> filter(fn: (r) => r._field == "density_score")
               |> mean()
             """
             points = await query_points(query)
             if not points:
                 return 0.0
-            # occupancy_pct directly maps: 0% = free flow, 100% = full congestion
-            occupancy = float(points[0].get("_value", 0))
-            return min(max(occupancy, 0.0), 100.0)
+            values = [float(p.get("_value", 0)) for p in points if p.get("_value") is not None]
+            if not values:
+                return 0.0
+            return min(max(sum(values) / len(values), 0.0), 100.0)
         except Exception:
             logger.exception("Error in _calc_flow_density for %s", segment_id)
             return 0.0
@@ -288,43 +320,48 @@ class RiskScoringEngine:
         return 20.0
 
     async def _calc_historical_baseline(self, segment_id: str) -> float:
-        """Compare current hour's readings to historical baselines.
+        """Compare current city density to its 6-hour rolling average.
 
-        Returns a score 0-100 based on how unusual current conditions are
-        compared to the historical norm.
+        Uses the city-specific measurement so each city's baseline reflects its
+        own sensor network. A large positive deviation means unusually high
+        congestion relative to the recent norm.
+        Returns 0-100.
         """
+        if not _SAFE_ID.match(segment_id):
+            raise ValueError(f"Invalid segment_id for Flux query: {segment_id!r}")
         try:
+            import asyncio
             from traffic_ai.db.influx import query_points
-            now = datetime.now(timezone.utc)
-            # Get current speed
-            query = f"""
+            measurement, _, _ = _city_info(segment_id)
+            if not _SAFE_ID.match(measurement):
+                raise ValueError(f"Invalid measurement for Flux query: {measurement!r}")
+            q_now = f"""
             from(bucket: "traffic_metrics")
               |> range(start: -15m)
-              |> filter(fn: (r) => r._measurement == "loop_detector")
-              |> filter(fn: (r) => r.segment_id == "{segment_id}")
-              |> filter(fn: (r) => r._field == "speed_kmh")
+              |> filter(fn: (r) => r._measurement == "{measurement}")
+              |> filter(fn: (r) => r._field == "density_score")
               |> mean()
             """
-            points = await query_points(query)
-            if not points:
+            # Preceding window excludes the last 15 min so hist != current
+            q_hist = f"""
+            from(bucket: "traffic_metrics")
+              |> range(start: -6h, stop: -15m)
+              |> filter(fn: (r) => r._measurement == "{measurement}")
+              |> filter(fn: (r) => r._field == "density_score")
+              |> mean()
+            """
+            now_pts, hist_pts = await asyncio.gather(
+                query_points(q_now), query_points(q_hist)
+            )
+            if not now_pts or not hist_pts:
                 return 0.0
-            current_speed = float(points[0].get("_value", 0))
-
-            if self.db is not None:
-                from traffic_ai.models.orm import SpeedBaseline
-                result = await self.db.execute(
-                    select(SpeedBaseline).where(
-                        SpeedBaseline.segment_id == segment_id,
-                        SpeedBaseline.hour_of_day == now.hour,
-                        SpeedBaseline.day_of_week == now.weekday(),
-                    )
-                )
-                baseline = result.scalar_one_or_none()
-                if baseline and baseline.std_speed_kmh and baseline.std_speed_kmh > 0:
-                    z_score = abs(current_speed - baseline.avg_speed_kmh) / baseline.std_speed_kmh
-                    # z_score >= 3 => 100, z_score = 0 => 0
-                    return min(z_score / 3.0 * 100, 100.0)
-            return 0.0
+            current = float(now_pts[0].get("_value") or 0)
+            hist = float(hist_pts[0].get("_value") or 0)
+            if hist <= 0:
+                return 0.0
+            # How much worse than historical average (positive = more congested now)
+            deviation = max(0.0, (current - hist) / max(hist, 1.0))
+            return min(deviation * 100, 100.0)
         except Exception:
             logger.exception("Error in _calc_historical_baseline for %s", segment_id)
             return 0.0

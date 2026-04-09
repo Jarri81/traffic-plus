@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class RoadSegmentOut(BaseModel):
@@ -122,7 +122,7 @@ class TokenResponse(BaseModel):
 
 class UserRegister(BaseModel):
     """Request body for user registration."""
-    email: str
+    email: EmailStr
     password: str = Field(min_length=8)
     name: Optional[str] = None
 
@@ -133,7 +133,7 @@ class UserRoleUpdate(BaseModel):
 
 class UserCreate(BaseModel):
     """Admin-initiated user creation."""
-    email: str
+    email: EmailStr
     password: str = Field(min_length=8)
     name: Optional[str] = None
     role: str = Field(default="viewer", pattern="^(viewer|operator|admin)$")

@@ -39,10 +39,23 @@ FEATURE_COLS = [
     "temperature_c",
 ]
 N_FEATURES = len(FEATURE_COLS)
-SEQ_LEN = 12  # 12 × 5-min steps = 60 min history
+SEQ_LEN = 12  # 12 × 15-min steps = 3h history
 
 # Horizon → output index mapping (all horizons trained as multi-output)
 HORIZONS = {15: 0, 30: 1, 60: 2}
+
+# Two-stream: weather forecast branch
+WEATHER_COLS = ["precipitation_mm", "wind_speed_kmh", "temperature_c"]
+WEATHER_IDXS = [FEATURE_COLS.index(c) for c in WEATHER_COLS]  # [7, 8, 9]
+N_FORECAST_STEPS = 4  # next 4 × 15-min = 1-hour forecast
+
+# Open-Meteo free forecast API (Madrid city centre)
+_OPENMETEO_FORECAST_URL = (
+    "https://api.open-meteo.com/v1/forecast"
+    "?latitude=40.4168&longitude=-3.7038"
+    "&hourly=precipitation,windspeed_10m,temperature_2m"
+    "&forecast_days=1&timezone=Europe%2FMadrid"
+)
 
 _CACHE_DIR = Path(
     os.environ.get(
@@ -71,17 +84,20 @@ class CongestionPredictor:
         self,
         sequence: "np.ndarray",
         horizon_minutes: int = 30,
+        weather_forecast: "np.ndarray | None" = None,
     ) -> dict[str, Any]:
         """Predict speed and congestion level.
 
         Parameters
         ----------
         sequence:
-            Float32 array of shape (SEQ_LEN, N_FEATURES).  Missing values
-            should be filled with zeros; the training scaler handles normalisation
-            via the ONNX graph's first node.
+            Float32 array of shape (SEQ_LEN, N_FEATURES).
         horizon_minutes:
-            Prediction horizon.  One of 15, 30, 60.  Defaults to 30.
+            Prediction horizon — one of 15, 30, 60.
+        weather_forecast:
+            Optional float32 array of shape (N_FORECAST_STEPS, 3) with
+            normalized (precip, wind, temp) for the next hour. When None,
+            zeros are used (average weather assumption).
 
         Returns
         -------
@@ -89,9 +105,11 @@ class CongestionPredictor:
         horizon_minutes, model.
         """
         horizon_minutes = _nearest_horizon(horizon_minutes)
+        if weather_forecast is None:
+            weather_forecast = np.zeros((N_FORECAST_STEPS, len(WEATHER_COLS)), dtype=np.float32)
         try:
             session = self._get_session()
-            return self._infer(session, sequence, horizon_minutes)
+            return self._infer(session, sequence, weather_forecast, horizon_minutes)
         except Exception as exc:
             logger.warning("LSTM inference failed (%s), using heuristic", exc)
             return _heuristic_predict(sequence, horizon_minutes)
@@ -118,14 +136,16 @@ class CongestionPredictor:
             logger.info("Loaded LSTM congestion model from %s", self._model_path)
         return self._session
 
-    def _infer(self, session, sequence: "np.ndarray", horizon_minutes: int) -> dict[str, Any]:
-        # Ensure correct shape: (1, SEQ_LEN, N_FEATURES)
+    def _infer(self, session, sequence: "np.ndarray", weather_forecast: "np.ndarray", horizon_minutes: int) -> dict[str, Any]:
+        # Ensure correct shapes: (1, SEQ_LEN, N_FEATURES) and (1, N_FORECAST_STEPS, 3)
         seq = np.asarray(sequence, dtype=np.float32)
         if seq.ndim == 2:
-            seq = seq[np.newaxis, ...]  # add batch dim
+            seq = seq[np.newaxis, ...]
+        wx = np.asarray(weather_forecast, dtype=np.float32)
+        if wx.ndim == 2:
+            wx = wx[np.newaxis, ...]
 
-        input_name = session.get_inputs()[0].name
-        outputs = session.run(None, {input_name: seq})
+        outputs = session.run(None, {"sequence": seq, "weather_forecast": wx})
 
         # outputs[0] shape: (1, len(HORIZONS)) — raw speed predictions
         preds = outputs[0][0]  # (len(HORIZONS),)
@@ -165,9 +185,70 @@ def get_predictor() -> CongestionPredictor:
 def predict_congestion(
     sequence: "np.ndarray",
     horizon_minutes: int = 30,
+    weather_forecast: "np.ndarray | None" = None,
 ) -> dict[str, Any]:
     """Module-level convenience wrapper."""
-    return get_predictor().predict(sequence, horizon_minutes)
+    return get_predictor().predict(sequence, horizon_minutes, weather_forecast)
+
+
+async def fetch_weather_forecast() -> "np.ndarray":
+    """Fetch next-hour weather forecast from Open-Meteo and return normalised
+    (N_FORECAST_STEPS, 3) array ready for ONNX input.
+
+    Uses the scaler saved during training to normalise the raw values.
+    Falls back to zeros (average conditions) on any error.
+    """
+    import json
+    try:
+        import aiohttp
+        from datetime import datetime, timezone as _tz
+
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(_OPENMETEO_FORECAST_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Open-Meteo returned {resp.status}")
+                data = await resp.json()
+
+        hourly = data.get("hourly", {})
+        times = hourly.get("time", [])
+        precip = hourly.get("precipitation", [])
+        wind = hourly.get("windspeed_10m", [])
+        temp = hourly.get("temperature_2m", [])
+
+        # Find the index of the current hour
+        now_str = datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:00")
+        # Try local time string too (Open-Meteo returns local time)
+        from datetime import datetime as _dt
+        now_local = _dt.now().strftime("%Y-%m-%dT%H:00")
+        idx = next((i for i, t in enumerate(times) if t == now_local or t == now_str), 0)
+
+        # Build N_FORECAST_STEPS rows by interpolating hourly → 15-min
+        rows = []
+        for step in range(N_FORECAST_STEPS):
+            hour_offset = step / 4.0  # 0.0, 0.25, 0.5, 0.75
+            i0 = idx + int(hour_offset)
+            i1 = min(i0 + 1, len(times) - 1)
+            frac = hour_offset - int(hour_offset)
+            p = float(precip[i0]) * (1 - frac) + float(precip[i1]) * frac if precip else 0.0
+            w = float(wind[i0]) * (1 - frac) + float(wind[i1]) * frac if wind else 0.0
+            t = float(temp[i0]) * (1 - frac) + float(temp[i1]) * frac if temp else 15.0
+            rows.append([p, w, t])
+
+        raw = np.array(rows, dtype=np.float32)  # (4, 3)
+
+        # Normalise using training scaler
+        scaler_path = _CACHE_DIR / "congestion_scaler.json"
+        if scaler_path.exists():
+            scaler = json.loads(scaler_path.read_text())
+            mean = np.array(scaler["mean"], dtype=np.float32)[WEATHER_IDXS]
+            std = np.array(scaler["std"], dtype=np.float32)[WEATHER_IDXS]
+            raw = (raw - mean) / std
+
+        return raw
+
+    except Exception as exc:
+        logger.debug("Weather forecast fetch failed (%s), using zeros", exc)
+        return np.zeros((N_FORECAST_STEPS, len(WEATHER_COLS)), dtype=np.float32)
 
 
 # ── Feature engineering helpers ──────────────────────────────────────────────

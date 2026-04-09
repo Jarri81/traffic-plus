@@ -94,12 +94,16 @@ async def upload_ticket_photo(
     if settings.s3_bucket:
         # TODO: Real S3 upload via boto3
         try:
+            import asyncio
             import boto3
             s3 = boto3.client("s3", region_name=settings.aws_region)
             s3_key = f"tickets/{ticket_id}/{photo.filename}"
-            s3.put_object(
-                Bucket=settings.s3_bucket, Key=s3_key,
-                Body=contents, ContentType=content_type,
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: s3.put_object(
+                    Bucket=settings.s3_bucket, Key=s3_key,
+                    Body=contents, ContentType=content_type,
+                ),
             )
             logger.info("Uploaded ticket photo to s3://%s/%s", settings.s3_bucket, s3_key)
         except Exception:

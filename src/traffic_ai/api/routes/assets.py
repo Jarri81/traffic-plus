@@ -58,4 +58,7 @@ async def get_asset(
     asset = result.scalar_one_or_none()
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
+    effective_pilot = scoped_pilot(current_user, None)
+    if effective_pilot and asset.pilot != effective_pilot:
+        raise HTTPException(status_code=404, detail="Asset not found")
     return AssetOut.model_validate(asset)

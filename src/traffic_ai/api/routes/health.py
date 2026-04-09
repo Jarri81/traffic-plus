@@ -35,8 +35,7 @@ async def readiness_check() -> dict:
         checks["redis"] = f"error: {exc}"
     try:
         from traffic_ai.db.influx import get_influx_client
-        client = get_influx_client()
-        ready = await client.ping()
+        ready = await get_influx_client().ping()
         checks["influxdb"] = "ok" if ready else "not ready"
     except Exception as exc:
         checks["influxdb"] = f"error: {exc}"

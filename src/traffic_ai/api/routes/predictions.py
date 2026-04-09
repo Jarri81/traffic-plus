@@ -1,6 +1,7 @@
 """Congestion prediction endpoints — LSTM ONNX inference with heuristic fallback."""
 from __future__ import annotations
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +11,8 @@ from traffic_ai.api.deps import get_current_user
 from traffic_ai.db.database import get_db
 from traffic_ai.models.orm import RoadSegment, User
 from traffic_ai.models.schemas import PredictionOut, PredictionRequest
+
+_SAFE_ID = re.compile(r'^[a-zA-Z0-9_\-]+$')
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,34 @@ async def prediction_history(
     return []
 
 
+@router.get("/predictions/segments/{segment_id}")
+async def get_segment_prediction(
+    segment_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: User = Depends(get_current_user),
+    horizon_minutes: int = 30,
+) -> dict:
+    """GET convenience wrapper — compute a congestion prediction for a segment.
+
+    Returns the same payload as POST /predict/congestion but via GET so the
+    dashboard can fetch it without a request body.
+    """
+    result = await db.execute(select(RoadSegment).where(RoadSegment.id == segment_id))
+    segment = result.scalar_one_or_none()
+    if segment is None:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    prediction = await _lstm_predict(segment_id, horizon_minutes, segment)
+    return {
+        "segment_id": segment_id,
+        "predicted_speed_kmh": prediction["predicted_speed_kmh"],
+        "congestion_level": prediction["congestion_level"],
+        "confidence": prediction["confidence"],
+        "horizon_minutes": horizon_minutes,
+        "predicted_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # ── inference helper ─────────────────────────────────────────────────────────
 
 
@@ -68,33 +99,39 @@ async def _lstm_predict(
     segment: RoadSegment,
 ) -> dict:
     """Build the input sequence from InfluxDB and run LSTM inference."""
+    if not _SAFE_ID.match(segment_id):
+        raise ValueError(f"Invalid segment_id for Flux query: {segment_id!r}")
     try:
         from traffic_ai.db.influx import query_points  # noqa: PLC0415
         from traffic_ai.ml.congestion_model import (  # noqa: PLC0415
             build_sequence_from_influx,
+            fetch_weather_forecast,
             predict_congestion,
         )
 
-        # Fetch last 60 min of sensor readings (12 × 5-min steps)
+        # Fetch last 3h of sensor readings (12 × 15-min steps) and next-hour forecast in parallel
         sensor_query = f"""
         from(bucket: "traffic_metrics")
-          |> range(start: -1h)
+          |> range(start: -3h)
           |> filter(fn: (r) => r._measurement == "loop_detector")
           |> filter(fn: (r) => r.segment_id == "{segment_id}")
           |> filter(fn: (r) => r._field == "speed_kmh" or r._field == "occupancy_pct" or r._field == "flow_veh_per_min")
           |> pivot(rowKey:["_time"], columnKey:["_field"], valueColumn:"_value")
           |> sort(columns: ["_time"])
         """
-        sensor_pts = await query_points(sensor_query)
-
-        # Fetch latest weather
         wx_query = """
         from(bucket: "traffic_metrics")
           |> range(start: -1h)
           |> filter(fn: (r) => r._measurement == "weather")
           |> last()
         """
-        wx_pts = await query_points(wx_query)
+        import asyncio as _asyncio
+        sensor_pts, wx_pts, weather_forecast = await _asyncio.gather(
+            query_points(sensor_query),
+            query_points(wx_query),
+            fetch_weather_forecast(),
+        )
+
         wx_vals: dict = {}
         for p in wx_pts:
             field = p.get("_field", "")
@@ -104,7 +141,7 @@ async def _lstm_predict(
 
         sequence = build_sequence_from_influx(sensor_pts, wx_vals)
         if sequence is not None:
-            return predict_congestion(sequence, horizon_minutes)
+            return predict_congestion(sequence, horizon_minutes, weather_forecast)
 
     except Exception as exc:
         logger.debug("LSTM inference path failed (%s), using baseline heuristic", exc)

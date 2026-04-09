@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Annotated
 
@@ -10,6 +11,8 @@ from fastapi import APIRouter, Depends, Query
 from traffic_ai.api.deps import get_current_user
 from traffic_ai.db.influx import query_points
 from traffic_ai.models.orm import User
+
+_SAFE_ID = re.compile(r'^[a-zA-Z0-9_\-]+$')
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,8 @@ async def traffic_flow_history(
     volume (avg vehicle count), source.
     """
     try:
+        if segment_id and not _SAFE_ID.match(segment_id):
+            raise ValueError(f"Invalid segment_id for Flux query: {segment_id!r}")
         seg_filter = f'|> filter(fn: (r) => r.segment_id == "{segment_id}")' if segment_id else ""
         query = f"""
         from(bucket: "traffic_metrics")
@@ -55,11 +60,40 @@ async def traffic_flow_history(
                 "volume": None,
             })
 
-        return result or _synthetic_flow(hours)
+        if result:
+            return result
+
+        # Fall back to TomTom flow speed as an alternative
+        try:
+            tomtom_query = f"""
+            from(bucket: "traffic_metrics")
+              |> range(start: -{hours}h)
+              |> filter(fn: (r) => r._measurement == "tomtom_flow")
+              |> filter(fn: (r) => r._field == "current_speed")
+              |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+              |> sort(columns: ["_time"])
+            """
+            points2 = await query_points(tomtom_query)
+            for p in points2:
+                ts = p.get("_time")
+                val = p.get("_value")
+                if ts is None or val is None:
+                    continue
+                if isinstance(ts, str):
+                    ts = datetime.fromisoformat(ts)
+                result.append({
+                    "time": ts.strftime("%H:%M") if isinstance(ts, datetime) else str(ts),
+                    "flow": round(float(val), 1),
+                    "volume": None,
+                })
+        except Exception:
+            pass
+
+        return result
 
     except Exception:
         logger.exception("Failed to query traffic flow history")
-        return _synthetic_flow(hours)
+        return []
 
 
 @router.get("/metrics/risk-trend")
@@ -93,7 +127,7 @@ async def risk_score_trend(
             if isinstance(ts, str):
                 ts = datetime.fromisoformat(ts)
             result.append({
-                "day": ts.strftime("%-d %b") if isinstance(ts, datetime) else str(ts),
+                "day": f"{ts.day} {ts.strftime('%b')}" if isinstance(ts, datetime) else str(ts),
                 "score": round(float(val), 1),
             })
 

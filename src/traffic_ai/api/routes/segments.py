@@ -1,5 +1,6 @@
 """Road segment CRUD endpoints."""
 from __future__ import annotations
+import asyncio
 from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -41,6 +42,9 @@ async def get_segment(
     segment = result.scalar_one_or_none()
     if segment is None:
         raise HTTPException(status_code=404, detail="Segment not found")
+    effective_pilot = scoped_pilot(current_user, None)
+    if effective_pilot and segment.pilot != effective_pilot:
+        raise HTTPException(status_code=404, detail="Segment not found")
     return RoadSegmentOut.model_validate(segment)
 
 
@@ -65,10 +69,9 @@ async def segments_geojson(
     segments = result.scalars().all()
 
     engine = RiskScoringEngine(db=db)
-    features: list[dict[str, Any]] = []
+    sem = asyncio.Semaphore(10)
 
-    for seg in segments:
-        # Geometry — may be None if not yet populated
+    async def _compute_seg(seg: RoadSegment) -> dict[str, Any]:
         if seg.geom is not None:
             try:
                 shape = to_shape(seg.geom)
@@ -80,9 +83,9 @@ async def segments_geojson(
                 geometry = None  # type: ignore[assignment]
         else:
             geometry = None  # type: ignore[assignment]
-
-        score = await engine.compute(seg.id)
-        features.append({
+        async with sem:
+            score = await engine.compute(seg.id)
+        return {
             "type": "Feature",
             "geometry": geometry,
             "properties": {
@@ -95,6 +98,9 @@ async def segments_geojson(
                 "lanes": seg.lanes,
                 "length_m": seg.length_m,
             },
-        })
+        }
+
+    results = await asyncio.gather(*[_compute_seg(seg) for seg in segments], return_exceptions=True)
+    features = [r for r in results if isinstance(r, dict)]
 
     return {"type": "FeatureCollection", "features": features}
