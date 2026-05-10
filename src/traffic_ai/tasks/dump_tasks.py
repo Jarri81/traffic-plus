@@ -83,8 +83,9 @@ def dump_influx_to_r2(days_back: int = 1) -> dict:
         return {"status": "skipped", "reason": "no R2 credentials"}
 
     now = datetime.now(timezone.utc)
-    stop_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_dt = stop_dt - timedelta(days=days_back)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_dt = today - timedelta(days=days_back)
+    stop_dt = start_dt + timedelta(days=1)  # always exactly one calendar day
     date_str = start_dt.strftime("%Y-%m-%d")
     start = start_dt.isoformat()
     stop = stop_dt.isoformat()
