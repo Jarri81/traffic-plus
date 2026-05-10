@@ -1,5 +1,6 @@
 """Celery application configuration."""
 from celery import Celery
+from celery.schedules import crontab
 from traffic_ai.config import settings, get_profile
 
 app = Celery(
@@ -11,6 +12,7 @@ app = Celery(
         "traffic_ai.tasks.risk_tasks",
         "traffic_ai.tasks.weather_tasks",
         "traffic_ai.tasks.camera_tasks",
+        "traffic_ai.tasks.dump_tasks",
     ],
 )
 app.conf.update(
@@ -77,6 +79,12 @@ app.conf.beat_schedule = {
         "task": "traffic_ai.tasks.sensor_tasks.poll_tomtom_flow",
         "schedule": 1800.0,
         "options": {"priority": 6},
+    },
+    # ── Nightly R2 dump — runs at 02:00 UTC, dumps previous day to Cloudflare R2
+    "dump-influx-to-r2": {
+        "task": "traffic_ai.tasks.dump_tasks.dump_influx_to_r2",
+        "schedule": crontab(hour=2, minute=0),
+        "options": {"priority": 2},
     },
     # ── Weather
     "poll-weather": {

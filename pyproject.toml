@@ -30,6 +30,7 @@ dependencies = [
     "onnxruntime",
     "psycopg2-binary",
     "slowapi",
+    "boto3",
 ]
 
 [project.optional-dependencies]
