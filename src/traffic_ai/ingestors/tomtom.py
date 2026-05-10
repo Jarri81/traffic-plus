@@ -5,9 +5,10 @@ Two ingestors:
   TomTomFlowIngestor      — flow data for key highway coordinate points
 
 Free tier budget: 2,500 requests/day.
-  Incidents every 5 min  → 288 calls/day
-  Flow (6 pts) every 10 min → 6 × 144 = 864 calls/day
-  Total: ~1,152 calls/day  (46% of free tier)
+  Flow (40 pts) every 30 min → 40 × 48 = 1,920 calls/day  (77% of free tier)
+
+  Points cover Spain-wide intercity corridors (groups A–E) for MITMA crosscheck.
+  30-min resolution is sufficient — MITMA publishes hourly aggregates.
 
 Incident magnitude: 1=minor, 2=moderate, 3=major, 4=undefined/road_closed
 Incident types (subset): 1=accident, 6=jam, 7=lane_closed, 8=road_closed,
@@ -47,29 +48,57 @@ _CITY_CENTRES: dict[str, tuple[float, float]] = {
     "barcelona": (41.3851,  2.1734),
 }
 
-# Key highway coordinates: (name, lat, lon)
-# 16 points across Madrid (8), Barcelona (4), Valencia (4)
-# Budget: 16 × 144 polls/day = 2,304 calls/day (under 2,500 free-tier limit)
+# Intercity corridor points for MITMA crosscheck validation.
+# 40 points × 48 polls/day (every 30 min) = 1,920 calls/day < 2,500 free-tier limit.
+# All points are on intercity highways where MITMA OD assignment is meaningful
+# and where Madrid/Barcelona/Valencia sensor networks have zero coverage.
+# Tagged by corridor group (A–E) for query filtering.
 DEFAULT_FLOW_POINTS: list[tuple[str, float, float]] = [
-    # Madrid — radial highways + M-30 + M-40
-    ("madrid_m30",    40.4168, -3.7038),   # M-30 central ring
-    ("madrid_m40_s",  40.3700, -3.7300),   # M-40 south arc
-    ("madrid_m40_e",  40.4500, -3.5800),   # M-40 east arc
-    ("madrid_a1",     40.6266, -3.7234),   # A-1 north (Burgos)
-    ("madrid_a2",     40.4500, -3.5500),   # A-2 east (Barcelona)
-    ("madrid_a3",     40.3800, -3.6200),   # A-3 southeast (Valencia)
-    ("madrid_a4",     40.3200, -3.7100),   # A-4 south (Córdoba)
-    ("madrid_a6",     40.5236, -3.8236),   # A-6 northwest (La Coruña)
-    # Barcelona — AP-7 + inner ring + coastal
-    ("barcelona_ap7", 41.3851,  2.1734),   # AP-7 / Ronda Litoral
-    ("barcelona_b10", 41.3600,  2.1600),   # B-10 port access
-    ("barcelona_c31", 41.4000,  2.2100),   # C-31 Diagonal Mar / coastal
-    ("barcelona_c58", 41.4500,  2.1000),   # C-58 Sabadell / north exit
-    # Valencia — A-3 + ring roads
-    ("valencia_a3",   39.4699, -0.3763),   # A-3 west (Madrid)
-    ("valencia_v21",  39.5100, -0.3600),   # V-21 north port access
-    ("valencia_v30",  39.4600, -0.4400),   # V-30 west ring
-    ("valencia_cv35", 39.5200, -0.4100),   # CV-35 northwest (Llíria)
+    # Group A — Madrid radial exits
+    ("madrid_a1_somosierra",  41.1500, -3.5800),   # A-1 km 80  → Burgos/Bilbao
+    ("madrid_a2_guadalajara", 40.6200, -3.1600),   # A-2 km 55  → Zaragoza/Barcelona
+    ("madrid_a3_tarancon",    39.9900, -2.9900),   # A-3 km 90  → Valencia
+    ("madrid_a4_ocana",       39.9500, -3.5000),   # A-4 km 80  → Córdoba/Sevilla
+    ("madrid_a5_mostoles",    40.3200, -3.9500),   # A-5 km 25  → Badajoz
+    ("madrid_a6_guadarrama",  40.7300, -4.0700),   # A-6 km 55  → Valladolid/Galicia
+    ("madrid_r2_corredor",    40.5000, -3.3500),   # R-2 km 30  → Alcalá bypass
+    ("madrid_m50_sw",         40.3000, -3.8500),   # M-50       → Madrid outer ring SW
+    # Group B — Northeast corridor
+    ("zaragoza_a2_west",      41.4000, -1.3000),   # A-2 km 280 → Madrid→Zaragoza mid
+    ("zaragoza_a2_east",      41.5500, -0.7000),   # A-2 km 330 → Zaragoza→Barcelona
+    ("lleida_ap2",            41.6200,  0.6200),   # AP-2 km 460 → Lleida bypass
+    ("barcelona_ap7_tarragona", 41.1500, 1.2500),  # AP-7 km 250 → Barcelona→Tarragona
+    ("tarragona_ap7_south",   40.8000,  0.5000),   # AP-7 km 210 → Tarragona→Valencia
+    ("barcelona_b23",         41.3400,  2.0700),   # B-23 km 10  → Barcelona SW exit
+    ("girona_ap7_north",      42.0000,  2.8200),   # AP-7 km 710 → Barcelona→France
+    ("vic_c17",               41.9300,  2.2500),   # C-17 km 65  → Barcelona→Pyrenees
+    # Group C — Southeast / Mediterranean
+    ("valencia_a3_mid",       39.8500, -1.8500),   # A-3 km 330 → Valencia approach
+    ("valencia_ap7_north",    39.8000, -0.1500),   # AP-7 km 480 → Valencia→Barcelona
+    ("valencia_ap7_south",    39.3000, -0.4000),   # AP-7 km 420 → Valencia→Alicante
+    ("alicante_ap7",          38.3500, -0.4800),   # AP-7 km 550 → Alicante bypass
+    ("murcia_a30",            38.0000, -1.1300),   # A-30 km 380 → Murcia→Madrid
+    ("cartagena_a30",         37.6000, -1.0000),   # A-30 km 50  → Cartagena exit
+    ("almeria_a7",            37.1500, -2.0000),   # A-7 km 450  → Almería→Murcia
+    ("granada_a44",           37.5500, -3.6000),   # A-44 km 120 → Granada→Jaén
+    # Group D — South / Andalucía
+    ("sevilla_a4_north",      37.7000, -5.9500),   # A-4 km 530  → Sevilla→Madrid
+    ("sevilla_a49_west",      37.3800, -6.5000),   # A-49 km 20  → Sevilla→Huelva
+    ("cadiz_a4",              36.6000, -6.2000),   # A-4 km 650  → Cádiz→Sevilla
+    ("malaga_a7",             36.7200, -4.4000),   # A-7 km 230  → Málaga→Almería
+    ("malaga_a45",            37.1000, -4.5500),   # A-45 km 170 → Málaga→Córdoba
+    ("cordoba_a4",            37.8800, -4.7800),   # A-4 km 400  → Córdoba midpoint
+    ("jaen_a4",               38.0000, -3.7900),   # A-4 km 300  → Jaén stretch
+    ("huelva_a49",            37.2600, -7.0000),   # A-49 km 80  → Huelva→Portugal
+    # Group E — North / Atlantic
+    ("bilbao_ap8",            43.2630, -2.9350),   # AP-8 km 20  → Bilbao→San Sebastián
+    ("sansebastian_ap8",      43.3000, -1.9800),   # AP-8 km 80  → San Sebastián→France
+    ("burgos_a1",             42.3500, -3.7000),   # A-1 km 240  → Burgos→Madrid
+    ("valladolid_a62",        41.5000, -4.8000),   # A-62 km 120 → Valladolid→Salamanca
+    ("salamanca_a62",         40.9600, -5.6700),   # A-62 km 60  → Salamanca→Portugal
+    ("vigo_ap9",              42.2000, -8.7000),   # AP-9 km 20  → Vigo→Porto
+    ("coruna_ap9_north",      43.3700, -8.4000),   # AP-9 km 580 → A Coruña→Santiago
+    ("oviedo_a66",            43.0000, -5.9000),   # A-66 km 430 → Oviedo→Benavente
 ]
 
 _INCIDENT_TYPE_NAMES: dict[int, str] = {

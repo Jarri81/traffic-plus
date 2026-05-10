@@ -69,13 +69,13 @@ app.conf.beat_schedule = {
         "schedule": 180.0,  # match source refresh rate
         "options": {"priority": 7},
     },
-    # ── TomTom incidents removed — redundant with DGT incidents.
-    # Freed 1,440 calls/day reallocated to 10 extra flow points.
-    #
-    # ── TomTom flow — 16 highway points, every 10 min (2,304 calls/day < 2,500 limit)
+    # ── TomTom flow — 40 intercity corridor points, every 30 min
+    # 40 × 48 polls/day = 1,920 calls/day (77% of 2,500 free-tier limit).
+    # 30-min resolution sufficient for MITMA hourly crosscheck validation.
+    # Points cover Spain-wide corridors where sensor networks have no coverage.
     "poll-tomtom-flow": {
         "task": "traffic_ai.tasks.sensor_tasks.poll_tomtom_flow",
-        "schedule": 600.0,
+        "schedule": 1800.0,
         "options": {"priority": 6},
     },
     # ── Weather
