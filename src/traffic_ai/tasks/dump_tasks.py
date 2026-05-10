@@ -15,17 +15,17 @@ from traffic_ai.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Measurements to dump and their key fields
-_MEASUREMENTS = {
-    "madrid_traffic":    ["segment_id", "speed", "load", "occupancy", "intensity"],
-    "barcelona_traffic": ["segment_id", "state_actual", "state_forecast"],
-    "valencia_traffic":  ["segment_id", "state"],
-    "dgt_camera":        ["camera_id", "road", "vehicle_count", "density_score", "camera_online"],
-    "madrid_camera":     ["camera_id", "vehicle_count", "density_score", "camera_online"],
-    "tomtom_flow":       ["point_id", "current_speed", "free_flow_speed", "density_score", "confidence"],
-    "tomtom_incidents":  ["id", "type_name", "magnitude_name", "road", "city", "delay_s", "length_m", "lat", "lon"],
-    "weather":           ["location", "temperature_2m", "wind_speed_10m", "precipitation", "relative_humidity_2m"],
-}
+# Measurements to dump — all fields kept (keep() removed; pivot exposes everything)
+_MEASUREMENTS = [
+    "madrid_traffic",
+    "barcelona_traffic",
+    "valencia_traffic",
+    "dgt_camera",
+    "madrid_camera",
+    "tomtom_flow",
+    "tomtom_incidents",
+    "weather",
+]
 
 
 def _get_r2_client():
@@ -44,7 +44,6 @@ def _query_measurement(client: InfluxDBClient, measurement: str, start: str, sto
       |> range(start: {start}, stop: {stop})
       |> filter(fn: (r) => r._measurement == "{measurement}")
       |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-      |> keep(columns: ["_time"] + {list(_MEASUREMENTS[measurement])})
     """
     try:
         df = client.query_api().query_data_frame(query, org=settings.influx_org)
