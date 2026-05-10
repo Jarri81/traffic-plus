@@ -71,7 +71,7 @@ services:
     networks:
       - traffic-ai-net
     restart: unless-stopped
-    mem_limit: 192m
+    mem_limit: 512m
     logging:
       driver: "json-file"
       options:
@@ -81,8 +81,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
       interval: 10s
       timeout: 5s
-      retries: 12
-      start_period: 120s
+      retries: 18
+      start_period: 180s
 
   api:
     build:
@@ -161,7 +161,7 @@ services:
     networks:
       - traffic-ai-net
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 192m
     logging:
       driver: "json-file"
       options:
